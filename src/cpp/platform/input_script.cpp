@@ -49,7 +49,7 @@ template <class T>
 bool ParseNumber(std::string_view token, T &value) {
 #ifdef __ANDROID__
     std::string copy(token);
-    char *end = nullptr;
+    char       *end = nullptr;
     if constexpr (std::is_floating_point_v<T>) {
         value = static_cast<T>(std::strtod(copy.c_str(), &end));
     } else {

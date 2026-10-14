@@ -201,16 +201,17 @@ InputMenuMouse InputTakeMenuMouse();
 // Does not drain motion, wheel, buttons or tap edges.
 void InputPeekMenuMouseMotion(float &dx, float &dy);
 #if defined(__ANDROID__)
-bool InputTakeTouchPosition(float &x, float &y);
 bool InputTouchOverlayVisible();
+
 // Active-high PS2 button word plus normalized left and right stick positions.
 struct InputTouchOverlayState {
     std::uint16_t buttons = 0;
-    float left_x = 0.0f;
-    float left_y = 0.0f;
-    float right_x = 0.0f;
-    float right_y = 0.0f;
+    float         left_x = 0.0f;
+    float         left_y = 0.0f;
+    float         right_x = 0.0f;
+    float         right_y = 0.0f;
 };
+
 void InputSetTouchOverlay(const InputTouchOverlayState &state);
 #endif
 

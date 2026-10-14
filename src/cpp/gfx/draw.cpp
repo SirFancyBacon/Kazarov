@@ -263,8 +263,8 @@ VkRect2D ClearArea(const LogicalRect *rect, const Target &target) {
     // Host letterbox bars are cleared outside the logical game frame. Do not clip an
     // explicit clear that lies entirely in a bar back to the game frame.
     const bool outside_frame = rect != nullptr &&
-        (rect->x + rect->w <= 0.0f || rect->x >= g.config.logical_width ||
-         rect->y + rect->h <= 0.0f || rect->y >= g.config.logical_height);
+                               (rect->x + rect->w <= 0.0f || rect->x >= g.config.logical_width ||
+                                rect->y + rect->h <= 0.0f || rect->y >= g.config.logical_height);
     return ClipsToFrame(g.target) && !outside_frame ? Intersect(area, FramePixels(target.mapping)) : area;
 }
 
@@ -417,13 +417,13 @@ bool Prepare(PipelineFamily family, VkPrimitiveTopology topology, const TextureB
         g.bound.cull = cull;
 #ifdef __ANDROID__
         g.cmd_set_cull_mode(cmd, state.cull == CullMode::None   ? VK_CULL_MODE_NONE
-                                                               : state.cull == CullMode::Back ? VK_CULL_MODE_BACK_BIT
-                                                                                              : VK_CULL_MODE_FRONT_BIT);
+                                 : state.cull == CullMode::Back ? VK_CULL_MODE_BACK_BIT
+                                                                : VK_CULL_MODE_FRONT_BIT);
 #else
 #ifdef __ANDROID__
         g.cmd_set_cull_mode(cmd, state.cull == CullMode::None   ? VK_CULL_MODE_NONE
-                                                               : state.cull == CullMode::Back ? VK_CULL_MODE_BACK_BIT
-                                                                                              : VK_CULL_MODE_FRONT_BIT);
+                                 : state.cull == CullMode::Back ? VK_CULL_MODE_BACK_BIT
+                                                                : VK_CULL_MODE_FRONT_BIT);
 #else
         vkCmdSetCullMode(cmd, state.cull == CullMode::None   ? VK_CULL_MODE_NONE
                               : state.cull == CullMode::Back ? VK_CULL_MODE_BACK_BIT

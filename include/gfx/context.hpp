@@ -153,9 +153,9 @@ struct Frame {
     VkSemaphore                        image_available = VK_NULL_HANDLE;
     VkFence                            fence = VK_NULL_HANDLE;
 #if defined(__ANDROID__)
-    VkQueryPool                        timer_pool = VK_NULL_HANDLE;
-    bool                               timer_recorded = false;
-    bool                               timer_canonical = false;
+    VkQueryPool timer_pool = VK_NULL_HANDLE;
+    bool        timer_recorded = false;
+    bool        timer_canonical = false;
 #endif
     bool                               pending = false;
     std::vector<TransientChunk>        chunks;
@@ -278,17 +278,18 @@ struct Context {
     uint32_t                      anisotropy_level = 0;
     PFN_vkCmdSetColorWriteMaskEXT cmd_set_color_write_mask = nullptr;
 #ifdef __ANDROID__
-    PFN_vkCmdPipelineBarrier2 cmd_pipeline_barrier2 = nullptr;
-    PFN_vkCmdBeginRendering cmd_begin_rendering = nullptr;
-    PFN_vkCmdEndRendering cmd_end_rendering = nullptr;
-    PFN_vkCmdSetCullMode cmd_set_cull_mode = nullptr;
-    PFN_vkCmdSetDepthTestEnable cmd_set_depth_test_enable = nullptr;
-    PFN_vkCmdSetDepthWriteEnable cmd_set_depth_write_enable = nullptr;
-    PFN_vkCmdSetDepthCompareOp cmd_set_depth_compare_op = nullptr;
+    PFN_vkCmdPipelineBarrier2     cmd_pipeline_barrier2 = nullptr;
+    PFN_vkQueueSubmit2            queue_submit2 = nullptr;
+    PFN_vkCmdBeginRendering       cmd_begin_rendering = nullptr;
+    PFN_vkCmdEndRendering         cmd_end_rendering = nullptr;
+    PFN_vkCmdSetCullMode          cmd_set_cull_mode = nullptr;
+    PFN_vkCmdSetDepthTestEnable   cmd_set_depth_test_enable = nullptr;
+    PFN_vkCmdSetDepthWriteEnable  cmd_set_depth_write_enable = nullptr;
+    PFN_vkCmdSetDepthCompareOp    cmd_set_depth_compare_op = nullptr;
     PFN_vkCmdSetStencilTestEnable cmd_set_stencil_test_enable = nullptr;
     PFN_vkCmdSetPrimitiveTopology cmd_set_primitive_topology = nullptr;
-    PFN_vkCmdSetStencilOp cmd_set_stencil_op = nullptr;
-    PFN_vkCmdSetFrontFace cmd_set_front_face = nullptr;
+    PFN_vkCmdSetStencilOp         cmd_set_stencil_op = nullptr;
+    PFN_vkCmdSetFrontFace         cmd_set_front_face = nullptr;
 #endif
     Swapchain                     swapchain;
     bool                          resize_pending = false;
