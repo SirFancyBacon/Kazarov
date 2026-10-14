@@ -97,7 +97,15 @@ void MemoryBarrier(VkCommandBuffer cmd, VkPipelineStageFlags2 src_stage, VkAcces
     dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
     dependency.memoryBarrierCount = 1;
     dependency.pMemoryBarriers = &barrier;
+#ifdef __ANDROID__
+    g.cmd_pipeline_barrier2(cmd, &dependency);
+#else
+#ifdef __ANDROID__
+    g.cmd_pipeline_barrier2(cmd, &dependency);
+#else
     vkCmdPipelineBarrier2(cmd, &dependency);
+#endif
+#endif
 }
 
 constexpr VkPipelineStageFlags2 kVertexInput =
@@ -292,7 +300,15 @@ void Transition(VkCommandBuffer cmd, Image &image, const ImageState &to) {
     dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
     dependency.imageMemoryBarrierCount = 1;
     dependency.pImageMemoryBarriers = &barrier;
+#ifdef __ANDROID__
+    g.cmd_pipeline_barrier2(cmd, &dependency);
+#else
+#ifdef __ANDROID__
+    g.cmd_pipeline_barrier2(cmd, &dependency);
+#else
     vkCmdPipelineBarrier2(cmd, &dependency);
+#endif
+#endif
     image.state = to;
 }
 
