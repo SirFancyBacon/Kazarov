@@ -612,6 +612,10 @@ bool CreateSwapchain() {
 
     g.swapchain.format = format.format;
     g.swapchain.extent = extent;
+#if defined(__ANDROID__)
+    g.swapchain.surface_capabilities = capabilities;
+    g.swapchain.compositor_rotation = info.preTransform != capabilities.currentTransform;
+#endif
     uint32_t count = 0;
     vkGetSwapchainImagesKHR(g.device, g.swapchain.handle, &count, nullptr);
     g.swapchain.images.resize(count);
@@ -836,11 +840,7 @@ void SwapchainBarrier(VkCommandBuffer cmd, VkImage image, VkImageLayout from, Vk
 #ifdef __ANDROID__
     g.cmd_pipeline_barrier2(cmd, &dependency);
 #else
-#ifdef __ANDROID__
-    g.cmd_pipeline_barrier2(cmd, &dependency);
-#else
     vkCmdPipelineBarrier2(cmd, &dependency);
-#endif
 #endif
 }
 
@@ -1030,6 +1030,7 @@ void RecreateScaledMainTargets() {
         DestroyImage(old_depth);
     });
     RecreateSharedTargets();
+    g.canonical_newest = false;
 }
 
 void DestroyMainTargets() {
@@ -1174,6 +1175,31 @@ void SetPresentMode(PresentMode mode) {
 namespace detail {
 namespace {
 
+void HandleSuboptimalSwapchain() {
+#if defined(__ANDROID__)
+    VkSurfaceCapabilitiesKHR current{};
+    if (g.swapchain.compositor_rotation &&
+        vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g.physical_device, g.surface, &current) == VK_SUCCESS) {
+        const auto &previous = g.swapchain.surface_capabilities;
+        auto        same_extent = [](VkExtent2D a, VkExtent2D b) { return a.width == b.width && a.height == b.height; };
+        // Android can keep reporting SUBOPTIMAL while the compositor rotates an unchanged surface.
+        if (same_extent(current.currentExtent, previous.currentExtent) &&
+            same_extent(current.minImageExtent, previous.minImageExtent) &&
+            same_extent(current.maxImageExtent, previous.maxImageExtent) &&
+            current.currentTransform == previous.currentTransform &&
+            current.supportedTransforms == previous.supportedTransforms &&
+            current.minImageCount == previous.minImageCount &&
+            current.maxImageCount == previous.maxImageCount &&
+            current.maxImageArrayLayers == previous.maxImageArrayLayers &&
+            current.supportedCompositeAlpha == previous.supportedCompositeAlpha &&
+            current.supportedUsageFlags == previous.supportedUsageFlags) {
+            return;
+        }
+    }
+#endif
+    g.resize_pending = true;
+}
+
 bool OpenFrame() {
     BeginCommands(CurrentFrame().draw_cmd);
 #if defined(__ANDROID__)
@@ -1221,7 +1247,7 @@ bool AcquireImage(bool targets) {
                                        CurrentFrame().image_available, VK_NULL_HANDLE, &g.image_index);
     }
     if (result == VK_SUBOPTIMAL_KHR) {
-        g.resize_pending = true;
+        HandleSuboptimalSwapchain();
     } else if (result != VK_SUCCESS) {
         Error("vkAcquireNextImageKHR failed (%d)", static_cast<int>(result));
         SubmitUploadsAndWait();
@@ -1272,8 +1298,9 @@ void PresentImage(Frame &frame, VkCommandBuffer cmd, Image &source) {
 #else
     VkResult result = vkQueuePresentKHR(g.queue, &present);
 #endif
-    if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_ERROR_SURFACE_LOST_KHR ||
-        result == VK_SUBOPTIMAL_KHR) {
+    if (result == VK_SUBOPTIMAL_KHR) {
+        HandleSuboptimalSwapchain();
+    } else if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_ERROR_SURFACE_LOST_KHR) {
         g.resize_pending = true;
     } else {
         Check(result, "vkQueuePresentKHR");
@@ -1430,6 +1457,7 @@ bool PresentCanonical() {
         RecreateScaledMainTargets();
         RecreateRenderTargets();
         g.render_scale_pending = false;
+        return false;
     }
     g.presented_display = false;
     if (g.offscreen) {
@@ -1493,6 +1521,7 @@ void SetRenderScale(float scale) {
     }
     RecreateScaledMainTargets();
     RecreateRenderTargets();
+    g.canonical_newest = false;
 }
 
 } // namespace gfx

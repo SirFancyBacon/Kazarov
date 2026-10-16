@@ -462,14 +462,20 @@ void CreatePipelines() {
     // mesh_prog0.vert always reads the skin at locations 4 and 5. Unskinned, they alias bytes of the
     // vertex itself, which the shader then never uses.
     VkVertexInputAttributeDescription attributes_prog0[6] = {
-        attributes_mesh[0], attributes_mesh[1], attributes_mesh[2], attributes_mesh[3],
+        attributes_mesh[0],
+        attributes_mesh[1],
+        attributes_mesh[2],
+        attributes_mesh[3],
         {4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex3D, position)},
         {5, 0, VK_FORMAT_R8G8B8A8_UINT,       offsetof(Vertex3D, color)   },
     };
     VkVertexInputBindingDescription   binding_skinned = {0, 2 * sizeof(Vertex3D),
                                                          VK_VERTEX_INPUT_RATE_VERTEX};
     VkVertexInputAttributeDescription attributes_skinned[6] = {
-        attributes_mesh[0], attributes_mesh[1], attributes_mesh[2], attributes_mesh[3],
+        attributes_mesh[0],
+        attributes_mesh[1],
+        attributes_mesh[2],
+        attributes_mesh[3],
         {4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, sizeof(Vertex3D) + offsetof(Prog0Skin, weight)},
         {5, 0, VK_FORMAT_R8G8B8A8_UINT,       sizeof(Vertex3D) + offsetof(Prog0Skin, bone)  },
     };
@@ -616,7 +622,7 @@ void CreatePipelines() {
                     stage[0] = {};
                     stage[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
                     stage[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-                    stage[0].module = family == kFamilyMesh ? mesh_module
+                    stage[0].module = family == kFamilyMesh  ? mesh_module
                                       : family > kFamilyMesh ? prog0_module
                                                              : draw2d_module;
                     stage[0].pSpecializationInfo =
@@ -636,7 +642,7 @@ void CreatePipelines() {
                     info.pVertexInputState = family == kFamilyMesh               ? &vertex_mesh
                                              : family == kFamilyMeshProg0        ? &vertex_prog0
                                              : family == kFamilyMeshProg0Skinned ? &vertex_skinned
-                                             : &vertex_2d;
+                                                                                 : &vertex_2d;
                     info.pInputAssemblyState = family == kFamily2DLines ? &lines : &triangles;
                     info.pViewportState = &viewport;
                     info.pRasterizationState = &raster;
@@ -677,9 +683,6 @@ void CreatePipelines() {
                 }
             });
         }
-        for (std::thread &thread : threads) {
-            thread.detach();
-        }
         uint32_t reported = UINT32_MAX;
         while (true) {
             std::unique_lock lock(mutex);
@@ -692,6 +695,9 @@ void CreatePipelines() {
             if (reported == total) {
                 break;
             }
+        }
+        for (std::thread &thread : threads) {
+            thread.join();
         }
     }
     Check(failure, "vkCreateGraphicsPipelines");

@@ -99,6 +99,7 @@ struct Texture {
     Image       depth; // render targets that keep their own only
     bool        render_target = false;
     bool        shares_main_depth = false;
+    bool        display_sized_shared = false;
     bool        frame = false;
     uint32_t    logical_width = 0;
     uint32_t    logical_height = 0;
@@ -108,13 +109,15 @@ struct Texture {
     const DisplayList *doomed = nullptr;
 };
 
+TextureHandle CreateDisplaySharedTarget(uint32_t logical_width, uint32_t logical_height, bool has_alpha);
+
 struct Mesh {
-    bool     live = false;
-    uint16_t generation = 0;
-    Buffer   buffer; // vertices, then indices
-    uint32_t vertex_count = 0;
-    uint32_t index_count = 0;
-    uint64_t last_draw_use = 0;
+    bool               live = false;
+    uint16_t           generation = 0;
+    Buffer             buffer; // vertices, then indices
+    uint32_t           vertex_count = 0;
+    uint32_t           index_count = 0;
+    uint64_t           last_draw_use = 0;
     const DisplayList *doomed = nullptr;
 };
 
@@ -146,12 +149,12 @@ struct DepthQuery {
 };
 
 struct Frame {
-    VkCommandPool                      pool = VK_NULL_HANDLE;
-    VkCommandBuffer                    upload_cmd = VK_NULL_HANDLE;
-    VkCommandBuffer                    draw_cmd = VK_NULL_HANDLE;
-    bool                               upload_open = false;
-    VkSemaphore                        image_available = VK_NULL_HANDLE;
-    VkFence                            fence = VK_NULL_HANDLE;
+    VkCommandPool   pool = VK_NULL_HANDLE;
+    VkCommandBuffer upload_cmd = VK_NULL_HANDLE;
+    VkCommandBuffer draw_cmd = VK_NULL_HANDLE;
+    bool            upload_open = false;
+    VkSemaphore     image_available = VK_NULL_HANDLE;
+    VkFence         fence = VK_NULL_HANDLE;
 #if defined(__ANDROID__)
     VkQueryPool timer_pool = VK_NULL_HANDLE;
     bool        timer_recorded = false;
@@ -166,9 +169,13 @@ struct Frame {
 };
 
 struct Swapchain {
-    VkSwapchainKHR           handle = VK_NULL_HANDLE;
-    VkFormat                 format = VK_FORMAT_UNDEFINED;
-    VkExtent2D               extent = {};
+    VkSwapchainKHR handle = VK_NULL_HANDLE;
+    VkFormat       format = VK_FORMAT_UNDEFINED;
+    VkExtent2D     extent = {};
+#if defined(__ANDROID__)
+    VkSurfaceCapabilitiesKHR surface_capabilities = {};
+    bool                     compositor_rotation = false;
+#endif
     std::vector<VkImage>     images;
     std::vector<VkSemaphore> render_finished;
 };
@@ -291,8 +298,8 @@ struct Context {
     PFN_vkCmdSetStencilOp         cmd_set_stencil_op = nullptr;
     PFN_vkCmdSetFrontFace         cmd_set_front_face = nullptr;
 #endif
-    Swapchain                     swapchain;
-    bool                          resize_pending = false;
+    Swapchain swapchain;
+    bool      resize_pending = false;
 
     std::array<Frame, kFramesInFlight> frames;
     uint32_t                           frame_slot = 0;
@@ -354,7 +361,7 @@ struct Context {
     bool                         display_pass = false;
     // Errors are reported by the canonical render; display renders of the same list stay quiet.
     uint32_t interpolation_tint = 0; // display replay only, packed into push flags bits 8-10
-    bool  quiet = false;
+    bool     quiet = false;
     // The list being replayed is the host's own 2D, which the full-frame rule leaves as drawn.
     bool  host_draws = false;
     Image display_color;

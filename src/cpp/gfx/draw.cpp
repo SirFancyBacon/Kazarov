@@ -88,11 +88,7 @@ void EnsureRendering(Target &target) {
 #ifdef __ANDROID__
     g.cmd_begin_rendering(cmd, &info);
 #else
-#ifdef __ANDROID__
-    g.cmd_begin_rendering(cmd, &info);
-#else
     vkCmdBeginRendering(cmd, &info);
-#endif
 #endif
     g.rendering = true;
 
@@ -194,13 +190,8 @@ void SetStencilFace(VkCommandBuffer cmd, uint32_t index, const StencilFace &face
         g.cmd_set_stencil_op(cmd, flags, StencilOpOf(face.fail), StencilOpOf(face.pass),
                              StencilOpOf(face.depth_fail), static_cast<VkCompareOp>(face.compare));
 #else
-#ifdef __ANDROID__
-        g.cmd_set_stencil_op(cmd, flags, StencilOpOf(face.fail), StencilOpOf(face.pass),
-                             StencilOpOf(face.depth_fail), static_cast<VkCompareOp>(face.compare));
-#else
         vkCmdSetStencilOp(cmd, flags, StencilOpOf(face.fail), StencilOpOf(face.pass), StencilOpOf(face.depth_fail),
                           static_cast<VkCompareOp>(face.compare));
-#endif
 #endif
     }
     if (g.bound.stencil_reference[index] != masks.reference) {
@@ -420,15 +411,9 @@ bool Prepare(PipelineFamily family, VkPrimitiveTopology topology, const TextureB
                                  : state.cull == CullMode::Back ? VK_CULL_MODE_BACK_BIT
                                                                 : VK_CULL_MODE_FRONT_BIT);
 #else
-#ifdef __ANDROID__
-        g.cmd_set_cull_mode(cmd, state.cull == CullMode::None   ? VK_CULL_MODE_NONE
-                                 : state.cull == CullMode::Back ? VK_CULL_MODE_BACK_BIT
-                                                                : VK_CULL_MODE_FRONT_BIT);
-#else
         vkCmdSetCullMode(cmd, state.cull == CullMode::None   ? VK_CULL_MODE_NONE
                               : state.cull == CullMode::Back ? VK_CULL_MODE_BACK_BIT
                                                              : VK_CULL_MODE_FRONT_BIT);
-#endif
 #endif
     }
     // An always-passing test that writes nothing is the same as no test, and cheaper.
@@ -440,11 +425,7 @@ bool Prepare(PipelineFamily family, VkPrimitiveTopology topology, const TextureB
 #ifdef __ANDROID__
         g.cmd_set_depth_test_enable(cmd, test);
 #else
-#ifdef __ANDROID__
-        g.cmd_set_depth_test_enable(cmd, test);
-#else
         vkCmdSetDepthTestEnable(cmd, test);
-#endif
 #endif
     }
     if (g.bound.depth_write != write) {
@@ -452,11 +433,7 @@ bool Prepare(PipelineFamily family, VkPrimitiveTopology topology, const TextureB
 #ifdef __ANDROID__
         g.cmd_set_depth_write_enable(cmd, write);
 #else
-#ifdef __ANDROID__
-        g.cmd_set_depth_write_enable(cmd, write);
-#else
         vkCmdSetDepthWriteEnable(cmd, write);
-#endif
 #endif
     }
     if (g.bound.depth_op != op) {
@@ -464,11 +441,7 @@ bool Prepare(PipelineFamily family, VkPrimitiveTopology topology, const TextureB
 #ifdef __ANDROID__
         g.cmd_set_depth_compare_op(cmd, static_cast<VkCompareOp>(op));
 #else
-#ifdef __ANDROID__
-        g.cmd_set_depth_compare_op(cmd, static_cast<VkCompareOp>(op));
-#else
         vkCmdSetDepthCompareOp(cmd, static_cast<VkCompareOp>(op));
-#endif
 #endif
     }
     int stencil = state.stencil_test ? 1 : 0;
@@ -477,11 +450,7 @@ bool Prepare(PipelineFamily family, VkPrimitiveTopology topology, const TextureB
 #ifdef __ANDROID__
         g.cmd_set_stencil_test_enable(cmd, stencil);
 #else
-#ifdef __ANDROID__
-        g.cmd_set_stencil_test_enable(cmd, stencil);
-#else
         vkCmdSetStencilTestEnable(cmd, stencil);
-#endif
 #endif
     }
     // The pipelines declare every stencil parameter dynamic, so each must be set once before
@@ -514,11 +483,7 @@ bool Prepare(PipelineFamily family, VkPrimitiveTopology topology, const TextureB
 #ifdef __ANDROID__
         g.cmd_set_primitive_topology(cmd, topology);
 #else
-#ifdef __ANDROID__
-        g.cmd_set_primitive_topology(cmd, topology);
-#else
         vkCmdSetPrimitiveTopology(cmd, topology);
-#endif
 #endif
     }
     VkRect2D scissor = state.scissor ? PixelRect(mapping, (state.extend_scissor ? ExtendClearRect(ScissorRect(state.scissor_rect), mapping) : ScissorRect(state.scissor_rect)),
@@ -555,10 +520,10 @@ void BindVertices(VkBuffer buffer, VkDeviceSize offset) {
 
 // prog0 is the draw's Vu_prog0 block at set 2, or nullptr for a plain draw.
 void BindConstants(VkPipelineLayout layout, const MeshConstants &constants, const Prog0Constants *prog0) {
-    VkDeviceSize alignment = g.properties.limits.minUniformBufferOffsetAlignment;
+    VkDeviceSize  alignment = g.properties.limits.minUniformBufferOffsetAlignment;
     TransientSpan span = AllocateTransient(sizeof(MeshConstants), alignment);
     std::memcpy(span.data, &constants, sizeof(MeshConstants));
-    uint32_t offset = static_cast<uint32_t>(span.offset);
+    uint32_t        offset = static_cast<uint32_t>(span.offset);
     VkCommandBuffer cmd = DrawCommands();
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 1, 1, &span.constants_set, 1, &offset);
     if (prog0 == nullptr) {
@@ -823,8 +788,10 @@ UiSide AnchoredSide(std::span<const Vertex2D> vertices) {
     float  x = (low_x + high_x) * 0.5f;
     float  y = (low_y + high_y) * 0.5f;
     UiSide side;
-    side.x = x < anchor.left_until ? -1 : x >= anchor.right_from ? 1 : 0;
-    side.y = y < anchor.top_until ? -1 : y >= anchor.bottom_from ? 1 : 0;
+    side.x = x < anchor.left_until ? -1 : x >= anchor.right_from ? 1
+                                                                 : 0;
+    side.y = y < anchor.top_until ? -1 : y >= anchor.bottom_from ? 1
+                                                                 : 0;
     side.scissor = (side.x != 0 || side.y != 0) && anchor.scissor;
     return side;
 }
@@ -910,8 +877,8 @@ void Transfer(VkCommandBuffer cmd, Image &src, const VkOffset3D src_offsets[2], 
 } // namespace
 
 LogicalMapping MainMapping(uint32_t width, uint32_t height) {
-    float w = static_cast<float>(width);
-    float h = static_cast<float>(height);
+    float       w = static_cast<float>(width);
+    float       h = static_cast<float>(height);
     const float logical_w = g.config.logical_width;
     const float logical_h = g.config.logical_height;
     const float aspect = g.config.display_aspect;
@@ -1015,11 +982,7 @@ void EndRendering() {
 #ifdef __ANDROID__
         g.cmd_end_rendering(DrawCommands());
 #else
-#ifdef __ANDROID__
-        g.cmd_end_rendering(DrawCommands());
-#else
         vkCmdEndRendering(DrawCommands());
-#endif
 #endif
         g.rendering = false;
     }
@@ -1033,11 +996,7 @@ void ResetDrawState() {
 #ifdef __ANDROID__
     g.cmd_set_front_face(cmd, VK_FRONT_FACE_COUNTER_CLOCKWISE);
 #else
-#ifdef __ANDROID__
-    g.cmd_set_front_face(cmd, VK_FRONT_FACE_COUNTER_CLOCKWISE);
-#else
     vkCmdSetFrontFace(cmd, VK_FRONT_FACE_COUNTER_CLOCKWISE);
-#endif
 #endif
 }
 
@@ -1136,8 +1095,8 @@ void Draw2DSided(Primitive primitive, std::span<const Vertex2D> vertices, const 
         DrawPrepared(primitive, vertices, binding, state, ui, side);
         return;
     }
-    uint32_t        extend = ExtentAxes(g.target);
-    LogicalMapping  mapping = GetLogicalMapping(g.target);
+    uint32_t       extend = ExtentAxes(g.target);
+    LogicalMapping mapping = GetLogicalMapping(g.target);
     if (ui && g.target == kMainTarget) {
         mapping = UiMapping(mapping);
     }

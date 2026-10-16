@@ -163,8 +163,8 @@ struct PadSlot {
     bool         rumble_sent = false;
     Uint64       rumble_time = 0;
     // The lightbar colour the game asked for, kept to restore when the pad reconnects.
-    bool         led_wanted = false;
-    Uint8        led[3] = {};
+    bool  led_wanted = false;
+    Uint8 led[3] = {};
 };
 
 // Which device the player touched last (InputActiveGlyphFamily): false until a key or the mouse is
@@ -190,18 +190,18 @@ float         g_android_overlay_ry = 0.0f;
 bool          g_android_overlay_enabled = true;
 bool          g_android_physical_mouse_connected = false;
 #endif
-float                                                    g_mouse_dx = 0.0f;
-float                                                    g_mouse_dy = 0.0f;
-InputMouseLook                                           g_mouse_look;
-InputMouseLookTotal                                      g_mouse_look_total;
-bool                                                     g_mouse_zoom = false;
-float                                                    g_scripted_wheel = 0.0f;
-std::int64_t                                             g_last_latch_tick = -1;
-std::int64_t                                             g_latch_serial = 0;
-std::int64_t                                             g_stick_read_serial = -1;
-bool                                                     g_stick_live = false;
-bool                                                     g_gamepad_subsystem = false;
-InputKeyboardMouse                                       g_scripted;
+float               g_mouse_dx = 0.0f;
+float               g_mouse_dy = 0.0f;
+InputMouseLook      g_mouse_look;
+InputMouseLookTotal g_mouse_look_total;
+bool                g_mouse_zoom = false;
+float               g_scripted_wheel = 0.0f;
+std::int64_t        g_last_latch_tick = -1;
+std::int64_t        g_latch_serial = 0;
+std::int64_t        g_stick_read_serial = -1;
+bool                g_stick_live = false;
+bool                g_gamepad_subsystem = false;
+InputKeyboardMouse  g_scripted;
 // The mouse is a menu's pointer (InputSetMenuMouse); the motion it has gathered for it.
 bool  g_menu_mouse = false;
 bool  g_menu_navigation = false;
@@ -861,8 +861,7 @@ void InputPoll() {
             ReadGamepad(g_slots[pad].gamepad, state);
         }
         g_device[pad] = state;
-        if (pad == 0 && g_slots[0].gamepad != nullptr && (state.buttons != 0 || Deflected(state.left_x) || Deflected(state.left_y) ||
-                                                           Deflected(state.right_x) || Deflected(state.right_y))) {
+        if (pad == 0 && g_slots[0].gamepad != nullptr && (state.buttons != 0 || Deflected(state.left_x) || Deflected(state.left_y) || Deflected(state.right_x) || Deflected(state.right_y))) {
             g_last_keyboard = false;
         }
         Compose(pad);
@@ -905,11 +904,12 @@ void InputHandleEvent(const SDL_Event &event) {
         int height = 0;
         WindowSize(width, height);
         if (g_android_overlay_enabled && width > 0 && height > 0) {
-            TouchOverlayHandleEvent({touch_kind, std::numeric_limits<std::uint64_t>::max(),
-                                     touch_x / width, touch_y / height},
-                                    true);
+            if (TouchOverlayHandleEvent({touch_kind, std::numeric_limits<std::uint64_t>::max(),
+                                         touch_x / width, touch_y / height},
+                                        true)) {
+                return;
+            }
         }
-        return;
     }
     if ((event.type == SDL_EVENT_MOUSE_MOTION && !touch_pointer) ||
         (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && !touch_pointer) ||
@@ -1095,7 +1095,7 @@ InputMenuMouse InputTakeMenuMouse() {
     mouse.dx = g_menu_dx + dx + g_scripted.mouse_dx + std::exchange(g_touch_dx, 0.0f);
     mouse.dy = g_menu_dy + dy + g_scripted.mouse_dy + std::exchange(g_touch_dy, 0.0f);
     mouse.wheel = MouseTakeWheel() + std::exchange(g_scripted_wheel, 0.0f) + std::exchange(g_touch_wheel, 0.0f);
-    mouse.buttons = MouseButtons() | g_scripted.mouse_buttons;
+    mouse.buttons = MouseButtons() | g_scripted.mouse_buttons | g_touch_held;
     // A tap is a click the pointer sees pressed on one take and let go on the next.
     if (g_touch_tap != 0) {
         if (g_touch_tap_shown) {

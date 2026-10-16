@@ -32,11 +32,7 @@ void HostBarrier(VkCommandBuffer cmd) {
 #ifdef __ANDROID__
     g.cmd_pipeline_barrier2(cmd, &dependency);
 #else
-#ifdef __ANDROID__
-    g.cmd_pipeline_barrier2(cmd, &dependency);
-#else
     vkCmdPipelineBarrier2(cmd, &dependency);
-#endif
 #endif
 }
 
