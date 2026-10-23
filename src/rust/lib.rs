@@ -132,6 +132,7 @@ fn extract_with_script_policy(
     })
 }
 
+#[cfg(test)]
 fn script_publication_policy_from_repr(
     value: u8,
 ) -> Result<core::ScriptPublicationPolicy, core::CoreError> {
@@ -412,27 +413,27 @@ fn refresh_configs(source: &str, config_dir: &str) -> Result<usize, core::CoreEr
         let characters = core::models::export_character_gameplay(&indexed, &staging)
             .map_err(|error| core::CoreError(format!("character gameplay export: {error}")))?;
         ready_to_install = true;
-        if destination.exists() {
-            if let Err(error) = std::fs::rename(destination, &backup) {
-                if error.kind() == std::io::ErrorKind::PermissionDenied {
-                    install_filewise(&staging, destination, &backup).map_err(|install_error| core::CoreError(format!(
+        if destination.exists()
+            && let Err(error) = std::fs::rename(destination, &backup)
+        {
+            if error.kind() == std::io::ErrorKind::PermissionDenied {
+                install_filewise(&staging, destination, &backup).map_err(|install_error| core::CoreError(format!(
                         "directory swap denied ({error}); filewise gameplay install failed: {install_error}; complete refresh retained at {}", staging.display()
                     )))?;
-                    if let Err(cleanup_error) = std::fs::remove_dir_all(&staging) {
-                        eprintln!(
-                            "gameplay refresh retained completed staging {}: {cleanup_error}",
-                            staging.display()
-                        );
-                    }
-                    return Ok(configs + audio + characters + 1);
+                if let Err(cleanup_error) = std::fs::remove_dir_all(&staging) {
+                    eprintln!(
+                        "gameplay refresh retained completed staging {}: {cleanup_error}",
+                        staging.display()
+                    );
                 }
-                return Err(core::CoreError(format!(
-                    "move existing gameplay directory {} to {}: {error}; complete refresh retained at {}",
-                    destination.display(),
-                    backup.display(),
-                    staging.display()
-                )));
+                return Ok(configs + audio + characters + 1);
             }
+            return Err(core::CoreError(format!(
+                "move existing gameplay directory {} to {}: {error}; complete refresh retained at {}",
+                destination.display(),
+                backup.display(),
+                staging.display()
+            )));
         }
         if let Err(error) = std::fs::rename(&staging, destination) {
             if backup.exists() {
@@ -444,13 +445,13 @@ fn refresh_configs(source: &str, config_dir: &str) -> Result<usize, core::CoreEr
                 staging.display()
             )));
         }
-        if backup.exists() {
-            if let Err(error) = std::fs::remove_dir_all(&backup) {
-                eprintln!(
-                    "gameplay refresh retained previous directory {}: {error}",
-                    backup.display()
-                );
-            }
+        if backup.exists()
+            && let Err(error) = std::fs::remove_dir_all(&backup)
+        {
+            eprintln!(
+                "gameplay refresh retained previous directory {}: {error}",
+                backup.display()
+            );
         }
         Ok(configs + audio + characters + 1)
     })();

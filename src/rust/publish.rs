@@ -174,6 +174,7 @@ fn check_asset(
     }
     Ok(())
 }
+#[cfg(test)]
 fn verify_catalog(port: &Path, catalog: &Value, expected: &BTreeSet<String>) -> CoreResult<()> {
     verify_catalog_with_document(
         &|name| Ok(fs::read(port.join(name))?),
@@ -1027,7 +1028,7 @@ fn verify_pack_textures(
 }
 
 fn verify_open_archive(archive: &Archive, marker: &Value, phase: &Phase) -> CoreResult<u64> {
-    let view = ArchiveView::new(&archive);
+    let view = ArchiveView::new(archive);
     let names: BTreeSet<String> = view.names().into_iter().collect();
     for &(name, _) in super::configs::gameplay_manifest() {
         if !names.contains(name) {

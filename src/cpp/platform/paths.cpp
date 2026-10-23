@@ -83,7 +83,22 @@ fs::path Installed(const char *name) {
     return base / config.app_dir / name;
 }
 
+bool DeviceRooted([[maybe_unused]] const fs::path &path) {
+#ifdef __SWITCH__
+    if (path.begin() == path.end()) {
+        return false;
+    }
+    std::string first = path.begin()->string();
+    return first.size() > 1 && first.back() == ':';
+#else
+    return false;
+#endif
+}
+
 fs::path Absolute(const fs::path &path) {
+    if (DeviceRooted(path)) {
+        return path.lexically_normal();
+    }
     std::error_code error;
     fs::path        absolute = fs::absolute(path, error);
     return error ? path : absolute.lexically_normal();
@@ -131,6 +146,9 @@ fs::path PathsExecutable() {
 #endif
     if (program.empty()) {
         return {};
+    }
+    if (DeviceRooted(program)) {
+        return program.lexically_normal();
     }
     fs::path absolute = fs::absolute(program, error);
     return error ? fs::path() : absolute;

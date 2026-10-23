@@ -1386,6 +1386,7 @@ fn prune_metadata(value: &mut Value) {
         _ => {}
     }
 }
+#[cfg(test)]
 fn publish_pair(
     published: &Path,
     path: &str,
@@ -1433,25 +1434,25 @@ fn publish_pair_impl(
     report: &mut ConversionReport,
     mut stream: Option<&mut StreamPairs<'_>>,
 ) -> CoreResult<()> {
-    if let Some(output) = stream.as_mut() {
-        if output.preview {
-            let document = path.replace('\\', "/");
-            if output
-                .pairs
-                .insert(
-                    document.clone(),
-                    StreamPair {
-                        gltf: Value::Null,
-                        metadata: Value::Null,
-                        buffer: None,
-                    },
-                )
-                .is_some()
-            {
-                return Err(fail(format!("duplicate model output: {document}")));
-            }
-            return Ok(());
+    if let Some(output) = stream.as_mut()
+        && output.preview
+    {
+        let document = path.replace('\\', "/");
+        if output
+            .pairs
+            .insert(
+                document.clone(),
+                StreamPair {
+                    gltf: Value::Null,
+                    metadata: Value::Null,
+                    buffer: None,
+                },
+            )
+            .is_some()
+        {
+            return Err(fail(format!("duplicate model output: {document}")));
         }
+        return Ok(());
     }
     if metadata["kind"] == "character" {
         for model in metadata["models"].as_array_mut().unwrap() {
@@ -4215,7 +4216,7 @@ fn publish_external_memory(
                 .push(entry);
         }
         pair.buffer =
-            externalize_buffers_memory_with_existing(&path, &mut doc, pair.buffer.as_deref())?;
+            externalize_buffers_memory_with_existing(path, &mut doc, pair.buffer.as_deref())?;
         pair.gltf = serde_json::to_vec(&doc)?;
         pair.metadata = serde_json::to_vec(&sidecar)?;
     }
@@ -4269,13 +4270,6 @@ fn collect(dir: &Path, files: &mut Vec<PathBuf>) -> CoreResult<()> {
         }
     }
     Ok(())
-}
-
-fn source_alias(raw: &Path, path: &Path) -> String {
-    path.strip_prefix(raw)
-        .unwrap()
-        .to_string_lossy()
-        .replace('\\', "/")
 }
 
 struct MemoryCardIcon {
@@ -4387,7 +4381,7 @@ fn analyze_file(
             png,
         });
     }
-    if matches!(extension(&alias), "mds" | "mdt") {
+    if matches!(extension(alias), "mds" | "mdt") {
         for ext in ["mot", "wgt", "bbp"] {
             let sibling_alias = Path::new(alias)
                 .with_extension(ext)
@@ -4834,11 +4828,11 @@ fn final_model_weights(preview_nanos: &[u128], external_ops: &[u128]) -> Vec<u12
         .iter()
         .zip(external_ops)
         .map(|(&preview, &external)| {
-            let external_weight = if external_total == 0 {
-                0
-            } else {
-                external.saturating_mul(preview_total).saturating_mul(2) / external_total
-            };
+            let external_weight = external
+                .saturating_mul(preview_total)
+                .saturating_mul(2)
+                .checked_div(external_total)
+                .unwrap_or(0);
             preview.saturating_add(external_weight).max(1)
         })
         .collect()
@@ -5007,8 +5001,8 @@ impl ModelPlan {
             .map_err(|_| fail("model analysis lock poisoned"))?;
         for analysis in analyses {
             let analysis = analysis.ok_or_else(|| fail("model analysis job did not complete"))?;
-            if let Some(analysis) = analysis {
-                if let Some(job) = commit_file(
+            if let Some(analysis) = analysis
+                && let Some(job) = commit_file(
                     Path::new("published"),
                     analysis,
                     &mut converted,
@@ -5016,9 +5010,9 @@ impl ModelPlan {
                     &mut used_textures,
                     &mut report,
                     true,
-                )? {
-                    native_jobs.push(job);
-                }
+                )?
+            {
+                native_jobs.push(job);
             }
         }
         let documents = self.documents;
@@ -5671,7 +5665,7 @@ pub fn strip_source(
                 }
             } else if dest.is_file() && fs::metadata(&dest)?.len() <= 128 << 20 {
                 let mut b = fs::read(&dest)?;
-                if scrub(&mut b, &alias, converted, 0)? {
+                if scrub(&mut b, alias, converted, 0)? {
                     fs::write(dest, b)?
                 }
             }
@@ -6436,7 +6430,7 @@ pub fn verify_files_with_script_policy(
                         )));
                     }
                 }
-                verify_images(&port, &document, &doc, &metadata, &names, &mut checked_pngs)?;
+                verify_images(&port, &document, &doc, &metadata, names, &mut checked_pngs)?;
                 if metadata["kind"] == "character" {
                     for model in metadata["models"]
                         .as_array()

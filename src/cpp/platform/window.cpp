@@ -15,7 +15,7 @@
 namespace {
 
 // Android shows the window fullscreen at the display's size, whatever is asked.
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(__SWITCH__)
 constexpr bool kFixedWindow = true;
 #else
 constexpr bool kFixedWindow = false;

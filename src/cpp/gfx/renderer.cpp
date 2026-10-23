@@ -160,8 +160,8 @@ void CreateInstance() {
     app.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
     app.pEngineName = "Kazarov";
     app.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-#ifdef __ANDROID__
-    // The NDK's headers and loader stop at Vulkan 1.3, the renderer's floor.
+#if defined(__ANDROID__) || defined(__SWITCH__)
+    // Android and Switch target Vulkan 1.3, the renderer's floor.
     app.apiVersion = VK_API_VERSION_1_3;
 #else
     app.apiVersion = VK_API_VERSION_1_4;

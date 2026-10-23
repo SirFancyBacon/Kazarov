@@ -5,9 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
-#include <iterator>
 #include <mutex>
-#include <random>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -15,6 +13,7 @@
 
 #include "gfx/context.hpp"
 #include "kazarov/log.hpp"
+#include "platform/files.hpp"
 #include "platform/paths.hpp"
 #include "shaders/draw.frag.spv.hpp"
 #include "shaders/draw2d.vert.spv.hpp"
@@ -207,21 +206,8 @@ void SaveCache(const std::filesystem::path &path) {
     if (path.has_parent_path()) {
         std::filesystem::create_directories(path.parent_path(), error);
     }
-    // Written aside and renamed so a concurrent reader never sees half a file.
-    std::filesystem::path temporary = path;
-    temporary += ".tmp" + std::to_string(std::random_device{}());
-    {
-        std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
-        if (!file ||
-            !file.write(reinterpret_cast<const char *>(data.data()), static_cast<std::streamsize>(size))) {
-            Error("cannot write the pipeline cache to %s", PathsDisplay(temporary).c_str());
-            return;
-        }
-    }
-    std::filesystem::rename(temporary, path, error);
-    if (error) {
-        Error("cannot write the pipeline cache to %s: %s", PathsDisplay(path).c_str(), error.message().c_str());
-        std::filesystem::remove(temporary, error);
+    if (FilesWrite(path, data.data(), size, true) != FilesResult::kWritten) {
+        Error("cannot write the pipeline cache to %s", PathsDisplay(path).c_str());
     }
 }
 
