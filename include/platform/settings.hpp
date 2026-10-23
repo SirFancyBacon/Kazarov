@@ -61,6 +61,9 @@ struct HostSettings {
     // audio.soundtrack "custom": play recordings from soundtrack/ beside save/ and data/.
     bool                          soundtrack = false;
     std::vector<ConfigKeyBinding> key_bindings;
+    // The controller's bindings, apart from the keyboard's: gamepad button names per action
+    // (InputBindPadButtons). An action left out keeps its default.
+    std::vector<ConfigKeyBinding> pad_bindings;
     float                         mouse_sensitivity = 0.1f;
     float                         stick_sensitivity = 1.33f;
     bool                          stick_invert_x = false;

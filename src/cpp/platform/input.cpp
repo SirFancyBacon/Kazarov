@@ -47,6 +47,9 @@ struct Action {
     Axis             axis;
     int              direction;
     std::string_view defaults;
+    // The controller's default for a host action. The pad's buttons default to the pad's own layout
+    // (GamepadButtonPad, gamepad_map.hpp) instead.
+    std::string_view pad_defaults = "";
 };
 
 // The game-side reasons for each default are in docs/PC.md ("Keyboard and mouse").
@@ -81,10 +84,11 @@ constexpr Action kActions[] = {
     {"rx",           ActionKind::Axis,     0,              kAxisRightX, 0,  ""},
     {"ry",           ActionKind::Axis,     0,              kAxisRightY, 0,  ""},
     {"fps_toggle",   ActionKind::Host,     0,              kAxisLeftX,  0,  "F3"},
-    {"developer_menu", ActionKind::Host,   0,              kAxisLeftX,  0,  "Gamepad:paddle2"},
-    {"debug_menu",   ActionKind::Host,     0,              kAxisLeftX,  0,  "Gamepad:paddle1"},
-    {"gyro_hold",    ActionKind::Host,     0,              kAxisLeftX,  0,  "Gamepad:paddle4"},
+    {"developer_menu", ActionKind::Host,   0,              kAxisLeftX,  0,  "",       "paddle2"},
+    {"debug_menu",   ActionKind::Host,     0,              kAxisLeftX,  0,  "",       "paddle1"},
+    {"gyro_hold",    ActionKind::Host,     0,              kAxisLeftX,  0,  "",       "paddle4"},
     {"zoom_reset",   ActionKind::Host,     0,              kAxisLeftX,  0,  "Mouse3"},
+    {"quick_loadout", ActionKind::Host,    0,              kAxisLeftX,  0,  "Down",   "dpdown"},
 };
 
 // Every gamepad button the game reads; GamepadButtonPad (gamepad_map.hpp) says which DualShock 2
@@ -110,12 +114,16 @@ constexpr SDL_GamepadButton kGamepadButtons[] = {
 // clang-format on
 
 constexpr std::size_t kActionCount = std::size(kActions);
-constexpr std::size_t kFirstHostAction = kActionCount - 5;
+constexpr std::size_t kFirstHostAction = kActionCount - 6;
 constexpr std::size_t kHostActionCount = kActionCount - kFirstHostAction;
 static_assert(kActions[kFirstHostAction].name == "fps_toggle");
 static_assert(static_cast<std::size_t>(InputHostAction::FpsToggle) == 0);
-static_assert(static_cast<std::size_t>(InputHostAction::ZoomReset) == kHostActionCount - 1);
+static_assert(static_cast<std::size_t>(InputHostAction::QuickLoadout) == kHostActionCount - 1);
 constexpr std::size_t kZoomResetHost = static_cast<std::size_t>(InputHostAction::ZoomReset);
+
+// The two triggers as bindable sources, after SDL's buttons in a capture's set of held sources.
+constexpr int kTriggerCount = 2;
+static_assert(SDL_GAMEPAD_BUTTON_COUNT + kTriggerCount <= 32);
 
 // AxisCalibration (ps2/src/gamepad.cpp): a byte within 49 above or 50 below the centre reads as
 // zero, and the remaining 78 steps each side span the game's +-128.
@@ -148,6 +156,8 @@ struct Source {
         MouseButton,
         MouseAxis,
         GamepadButton,
+        // code 0 is the left trigger, 1 the right one.
+        GamepadTrigger,
     };
 
     Kind  kind = Key;
@@ -169,8 +179,13 @@ struct PadSlot {
 // used, and the make of the first gamepad once one is open.
 bool             g_last_keyboard = false;
 InputGlyphFamily g_pad_family = InputGlyphFamily::Ps4;
+// The first gamepad's type, whose layout the controller's defaults follow (PS4 until one is open).
+SDL_GamepadType g_pad_type = SDL_GAMEPAD_TYPE_PS4;
 
 std::array<std::vector<Source>, kActionCount>            g_bindings;
+// The controller's bindings: an action without one keeps its default (PadSources).
+std::array<std::optional<std::vector<Source>>, kActionCount> g_pad_bindings;
+std::array<std::vector<Source>, kActionCount>                g_pad_defaults;
 bool                                                     g_bindings_ready = false;
 InputMouseSettings                                       g_mouse;
 std::array<PadSlot, kInputPadCount>                      g_slots;
@@ -237,6 +252,24 @@ std::string_view Trim(std::string_view text) {
     return text;
 }
 
+// A gamepad button or trigger by SDL's name, with or without a Gamepad: prefix.
+bool ParsePadSource(std::string_view name, Source &source) {
+    std::string lower = Lower(Trim(name));
+    if (lower.starts_with("gamepad:")) {
+        lower.erase(0, 8);
+    }
+    if (lower == "lefttrigger" || lower == "righttrigger") {
+        source = {Source::GamepadTrigger, lower == "lefttrigger" ? 0 : 1, 1.0f};
+        return true;
+    }
+    SDL_GamepadButton button = SDL_GetGamepadButtonFromString(lower.c_str());
+    if (button == SDL_GAMEPAD_BUTTON_INVALID) {
+        return false;
+    }
+    source = {Source::GamepadButton, static_cast<int>(button), 1.0f};
+    return true;
+}
+
 bool ParseSource(std::string_view name, ActionKind kind, Source &source) {
     std::string lower = Lower(Trim(name));
     if (kind == ActionKind::Axis) {
@@ -272,13 +305,7 @@ bool ParseSource(std::string_view name, ActionKind kind, Source &source) {
         return true;
     }
     if (kind == ActionKind::Host && lower.starts_with("gamepad:")) {
-        std::string       button_name = lower.substr(8);
-        SDL_GamepadButton button = SDL_GetGamepadButtonFromString(button_name.c_str());
-        if (button == SDL_GAMEPAD_BUTTON_INVALID) {
-            return false;
-        }
-        source = {Source::GamepadButton, static_cast<int>(button), 1.0f};
-        return true;
+        return ParsePadSource(lower, source);
     }
     bool button = lower.size() == 6 && lower.starts_with("mouse");
     if (button && lower[5] >= '1' && lower[5] < '1' + kMouseButtonCount) {
@@ -325,6 +352,14 @@ void EnsureBindings() {
     for (std::size_t i = 0; i < kActionCount; ++i) {
         std::vector<std::string_view> names = SplitDefaults(kActions[i].defaults);
         ParseSources(names, kActions[i].kind, g_bindings[i]);
+        g_pad_bindings[i].reset();
+        g_pad_defaults[i].clear();
+        for (std::string_view name : SplitDefaults(kActions[i].pad_defaults)) {
+            Source source;
+            if (ParsePadSource(name, source)) {
+                g_pad_defaults[i].push_back(source);
+            }
+        }
     }
     g_mouse = InputMouseSettings{};
     g_mouse_zoom = false;
@@ -400,18 +435,86 @@ bool GyroActive() {
     }
 }
 
-void ReadGamepad(SDL_Gamepad *gamepad, InputPadState &state) {
-    SDL_GamepadType type = SDL_GetGamepadType(gamepad);
-    for (SDL_GamepadButton button : kGamepadButtons) {
-        if (SDL_GetGamepadButton(gamepad, button)) {
-            state.buttons |= GamepadButtonPad(type, button);
+bool TriggerHeld(SDL_Gamepad *gamepad, int trigger) {
+    SDL_GamepadAxis axis = trigger == 0 ? SDL_GAMEPAD_AXIS_LEFT_TRIGGER : SDL_GAMEPAD_AXIS_RIGHT_TRIGGER;
+    return SDL_GetGamepadAxis(gamepad, axis) > kTriggerThreshold;
+}
+
+bool PadSourceHeld(SDL_Gamepad *gamepad, const Source &source) {
+    if (source.kind == Source::GamepadTrigger) {
+        return TriggerHeld(gamepad, source.code);
+    }
+    return source.kind == Source::GamepadButton &&
+           SDL_GetGamepadButton(gamepad, static_cast<SDL_GamepadButton>(source.code));
+}
+
+// The pad's button that a gamepad source presses on a pad of this type with the default layout, or 0.
+std::uint16_t PadSourceButton(const Source &source, SDL_GamepadType type) {
+    if (source.kind == Source::GamepadTrigger) {
+        return source.code == 0 ? kInputL2 : kInputR2;
+    }
+    return source.kind == Source::GamepadButton
+               ? GamepadButtonPad(type, static_cast<SDL_GamepadButton>(source.code))
+               : 0;
+}
+
+// The button action that presses a pad button, or kActionCount.
+std::size_t ButtonAction(std::uint16_t button) {
+    for (std::size_t i = 0; i < kActionCount; ++i) {
+        if (kActions[i].kind == ActionKind::Button && kActions[i].button == button) {
+            return i;
         }
     }
-    if (SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > kTriggerThreshold) {
+    return kActionCount;
+}
+
+// Whether the action pressing a pad button keeps the pad's own layout, having no controller binding.
+bool PadDefault(std::uint16_t button) {
+    std::size_t i = ButtonAction(button);
+    return i == kActionCount || !g_pad_bindings[i];
+}
+
+// The gamepad buttons and triggers that press an action on a pad of this type.
+std::vector<Source> PadSources(std::size_t i, SDL_GamepadType type) {
+    if (g_pad_bindings[i]) {
+        return *g_pad_bindings[i];
+    }
+    if (kActions[i].kind != ActionKind::Button) {
+        return g_pad_defaults[i];
+    }
+    std::vector<Source> sources;
+    for (SDL_GamepadButton button : kGamepadButtons) {
+        if (GamepadButtonPad(type, button) == kActions[i].button) {
+            sources.push_back({Source::GamepadButton, static_cast<int>(button), 1.0f});
+        }
+    }
+    if (kActions[i].button == kInputL2 || kActions[i].button == kInputR2) {
+        sources.push_back({Source::GamepadTrigger, kActions[i].button == kInputL2 ? 0 : 1, 1.0f});
+    }
+    return sources;
+}
+
+void ReadGamepad(SDL_Gamepad *gamepad, InputPadState &state) {
+    SDL_GamepadType type = SDL_GetGamepadType(gamepad);
+    // The pad's own layout for the buttons whose action has no controller binding.
+    for (SDL_GamepadButton button : kGamepadButtons) {
+        std::uint16_t pressed = GamepadButtonPad(type, button);
+        if (pressed != 0 && PadDefault(pressed) && SDL_GetGamepadButton(gamepad, button)) {
+            state.buttons |= pressed;
+        }
+    }
+    if (PadDefault(kInputL2) && TriggerHeld(gamepad, 0)) {
         state.buttons |= kInputL2;
     }
-    if (SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > kTriggerThreshold) {
+    if (PadDefault(kInputR2) && TriggerHeld(gamepad, 1)) {
         state.buttons |= kInputR2;
+    }
+    for (std::size_t i = 0; i < kActionCount; ++i) {
+        if (kActions[i].kind == ActionKind::Button && g_pad_bindings[i] &&
+            std::ranges::any_of(*g_pad_bindings[i],
+                                [&](const Source &source) { return PadSourceHeld(gamepad, source); })) {
+            state.buttons |= kActions[i].button;
+        }
     }
     Sint16 axes[4] = {SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFTX),
                       SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFTY),
@@ -561,11 +664,19 @@ void SendRumble(int pad) {
     slot.rumble_time = SDL_GetTicks();
 }
 
-bool GamepadButtonHeld(int button) {
-    return std::ranges::any_of(g_slots, [&](const PadSlot &slot) {
-        return slot.gamepad != nullptr &&
-               SDL_GetGamepadButton(slot.gamepad, static_cast<SDL_GamepadButton>(button));
-    });
+bool GamepadSourceHeld(const Source &source) {
+    if (std::ranges::any_of(g_slots, [&](const PadSlot &slot) {
+            return slot.gamepad != nullptr && PadSourceHeld(slot.gamepad, source);
+        })) {
+        return true;
+    }
+#if defined(__ANDROID__) || defined(KZ_TOUCH_OVERLAY)
+    // The on-screen gamepad presses what the button presses on a pad of the default layout.
+    if (g_touch_overlay_visible) {
+        return (g_touch_overlay.buttons & PadSourceButton(source, SDL_GAMEPAD_TYPE_STANDARD)) != 0;
+    }
+#endif
+    return false;
 }
 
 bool KeyBound(std::size_t host, int scancode) {
@@ -586,7 +697,8 @@ bool HostPolledHeld(std::size_t host) {
                 held = ((MouseButtons() | g_scripted.mouse_buttons) & (1u << (source.code - 1))) != 0;
                 break;
             case Source::GamepadButton:
-                held = GamepadButtonHeld(source.code);
+            case Source::GamepadTrigger:
+                held = GamepadSourceHeld(source);
                 break;
             case Source::MouseAxis:
                 break;
@@ -595,7 +707,7 @@ bool HostPolledHeld(std::size_t host) {
             return true;
         }
     }
-    return false;
+    return std::ranges::any_of(PadSources(kFirstHostAction + host, g_pad_type), GamepadSourceHeld);
 }
 
 bool MouseAxisBound(int code) {
@@ -649,6 +761,8 @@ bool                                 g_bind_capture = false;
 std::array<bool, SDL_SCANCODE_COUNT> g_bind_keys{};
 std::uint32_t                        g_bind_mouse = 0;
 std::uint16_t                        g_bind_pad = 0;
+// Every SDL gamepad button (bit n for button n) and, after them, the triggers.
+std::uint32_t g_bind_pad_all = 0;
 
 bool BindKeyHeld(int scancode) {
     return g_keys[scancode] || std::ranges::find(g_scripted.keys, scancode) != g_scripted.keys.end();
@@ -668,12 +782,56 @@ std::uint16_t BindGamepadHeld() {
     return held;
 }
 
+// Every gamepad button and trigger held now, as g_bind_pad_all keeps them.
+std::uint32_t BindPadAllHeld() {
+    std::uint32_t held = 0;
+    for (const PadSlot &slot : g_slots) {
+        if (slot.gamepad == nullptr) {
+            continue;
+        }
+        for (int button = 0; button < SDL_GAMEPAD_BUTTON_COUNT; ++button) {
+            if (SDL_GetGamepadButton(slot.gamepad, static_cast<SDL_GamepadButton>(button))) {
+                held |= 1u << button;
+            }
+        }
+        for (int trigger = 0; trigger < kTriggerCount; ++trigger) {
+            if (TriggerHeld(slot.gamepad, trigger)) {
+                held |= 1u << (SDL_GAMEPAD_BUTTON_COUNT + trigger);
+            }
+        }
+    }
+    return held;
+}
+
 void SnapshotBind() {
     for (int scancode = 0; scancode < SDL_SCANCODE_COUNT; ++scancode) {
         g_bind_keys[scancode] = BindKeyHeld(scancode);
     }
     g_bind_mouse = MouseButtons() | g_scripted.mouse_buttons;
     g_bind_pad = BindGamepadHeld();
+    g_bind_pad_all = BindPadAllHeld();
+}
+
+// A gamepad source by the name InputBindPadButtons takes.
+std::string PadSourceName(const Source &source) {
+    if (source.kind == Source::GamepadTrigger) {
+        return source.code == 0 ? "lefttrigger" : "righttrigger";
+    }
+    const char *name = SDL_GetGamepadStringForButton(static_cast<SDL_GamepadButton>(source.code));
+    return name != nullptr ? name : "";
+}
+
+std::size_t FindAction(std::string_view action) {
+    for (std::size_t i = 0; i < kActionCount; ++i) {
+        if (kActions[i].name == action) {
+            return i;
+        }
+    }
+    return kActionCount;
+}
+
+bool TakesPad(std::size_t i) {
+    return kActions[i].kind == ActionKind::Button || kActions[i].kind == ActionKind::Host;
 }
 
 } // namespace
@@ -696,6 +854,12 @@ void InputApplyConfig(const HostSettings &config) {
         std::vector<std::string_view> names(binding.keys.begin(), binding.keys.end());
         if (!InputBindKeys(binding.action, names)) {
             kz::Logf(kz::LogLevel::Warning, "input", "cannot bind {}", binding.action);
+        }
+    }
+    for (const ConfigKeyBinding &binding : config.pad_bindings) {
+        std::vector<std::string_view> names(binding.keys.begin(), binding.keys.end());
+        if (!InputBindPadButtons(binding.action, names)) {
+            kz::Logf(kz::LogLevel::Warning, "input", "cannot bind {} on the controller", binding.action);
         }
     }
     g_stick_sensitivity = config.stick_sensitivity;
@@ -831,6 +995,7 @@ void InputPoll() {
     }
     if (g_slots[0].gamepad != nullptr) {
         g_pad_family = GamepadFamily(g_slots[0].gamepad);
+        g_pad_type = SDL_GetGamepadType(g_slots[0].gamepad);
     }
 #ifdef __ANDROID__
     g_touch_overlay_visible = TouchOverlayWanted();
@@ -1186,6 +1351,7 @@ InputPadState InputApplyKeyboardMouse(InputPadState base, const InputKeyboardMou
                                                    (source.code == 0 ? held.mouse_dx : mouse_y);
                         break;
                     case Source::GamepadButton:
+                    case Source::GamepadTrigger:
                         break;
                 }
             }
@@ -1282,7 +1448,7 @@ std::span<const InputActionInfo> InputActions() {
         std::vector<InputActionInfo> list;
         list.reserve(kActionCount);
         for (std::size_t i = 0; i < kActionCount; ++i) {
-            list.push_back({kActions[i].name, i >= kFirstHostAction, kActions[i].kind == ActionKind::Axis});
+            list.push_back({kActions[i].name, i >= kFirstHostAction, kActions[i].kind == ActionKind::Axis, TakesPad(i)});
         }
         return list;
     }();
@@ -1321,9 +1487,10 @@ std::string InputBindingLabel(std::string_view action) {
                 case Source::MouseAxis:
                     one = std::string(source.scale < 0.0f ? "-" : "") + (source.code == 0 ? "MouseX" : "MouseY");
                     break;
-                case Source::GamepadButton: {
-                    const char *name = SDL_GetGamepadStringForButton(static_cast<SDL_GamepadButton>(source.code));
-                    one = name != nullptr ? std::string("Gamepad:") + name : "";
+                case Source::GamepadButton:
+                case Source::GamepadTrigger: {
+                    std::string name = PadSourceName(source);
+                    one = name.empty() ? "" : "Gamepad:" + name;
                     break;
                 }
             }
@@ -1387,26 +1554,99 @@ bool InputBindSourceHeld(std::string_view name) {
     if (lower.size() == 6 && lower.starts_with("mouse") && lower[5] >= '1' && lower[5] < '1' + kMouseButtonCount) {
         return ((MouseButtons() | g_scripted.mouse_buttons) & (1u << (lower[5] - '1'))) != 0;
     }
-    if (lower.starts_with("gamepad:")) {
-        SDL_GamepadButton button = SDL_GetGamepadButtonFromString(lower.substr(8).c_str());
-        if (button == SDL_GAMEPAD_BUTTON_INVALID) {
-            return false;
-        }
-        std::uint16_t held = BindGamepadHeld();
-        for (std::size_t i = 0; i < std::size(kGamepadButtons); ++i) {
-            if (kGamepadButtons[i] == button) {
-                return (held & (1u << i)) != 0;
-            }
-        }
+    int scancode = InputScancodeFromName(name);
+    if (scancode >= 0 && !lower.starts_with("gamepad:")) {
+        return BindKeyHeld(scancode);
+    }
+    // A gamepad button, by either name a capture gives it ("Gamepad:a" or "a").
+    Source pad;
+    return ParsePadSource(lower, pad) && std::ranges::any_of(g_slots, [&](const PadSlot &slot) {
+               return slot.gamepad != nullptr && PadSourceHeld(slot.gamepad, pad);
+           });
+}
+
+bool InputBindPadButtons(std::string_view action, std::span<const std::string_view> buttons) {
+    EnsureBindings();
+    std::size_t i = FindAction(action);
+    if (i == kActionCount || !TakesPad(i)) {
         return false;
     }
-    int scancode = InputScancodeFromName(name);
-    return scancode >= 0 && BindKeyHeld(scancode);
+    std::vector<Source> sources;
+    for (std::string_view name : buttons) {
+        Source source;
+        if (!ParsePadSource(name, source)) {
+            return false;
+        }
+        sources.push_back(source);
+    }
+    g_pad_bindings[i] = std::move(sources);
+    return true;
+}
+
+std::vector<std::string> InputPadBindingNames(std::string_view action, bool defaults) {
+    EnsureBindings();
+    std::vector<std::string> names;
+    std::size_t              i = FindAction(action);
+    if (i == kActionCount || !TakesPad(i)) {
+        return names;
+    }
+    std::optional<std::vector<Source>> bound;
+    if (defaults) {
+        bound = std::exchange(g_pad_bindings[i], std::nullopt);
+    }
+    std::vector<Source> sources = PadSources(i, g_pad_type);
+    if (defaults) {
+        g_pad_bindings[i] = std::move(bound);
+    }
+    for (const Source &source : sources) {
+        std::string name = PadSourceName(source);
+        if (!name.empty()) {
+            names.push_back(std::move(name));
+        }
+    }
+    return names;
+}
+
+std::string InputTakeBindPadButton() {
+    if (!g_bind_capture) {
+        return {};
+    }
+    std::uint32_t held = BindPadAllHeld();
+    std::uint32_t pressed = held & ~g_bind_pad_all;
+    g_bind_pad_all = held;
+    for (int bit = 0; bit < SDL_GAMEPAD_BUTTON_COUNT + kTriggerCount; ++bit) {
+        if ((pressed & (1u << bit)) == 0) {
+            continue;
+        }
+        Source      source = bit < SDL_GAMEPAD_BUTTON_COUNT
+                                 ? Source{Source::GamepadButton, bit, 1.0f}
+                                 : Source{Source::GamepadTrigger, bit - SDL_GAMEPAD_BUTTON_COUNT, 1.0f};
+        std::string name = PadSourceName(source);
+        if (!name.empty()) {
+            return name;
+        }
+    }
+    return {};
+}
+
+std::string InputPadGlyphAction(std::string_view action) {
+    EnsureBindings();
+    std::size_t i = FindAction(action);
+    if (i == kActionCount || !g_pad_bindings[i]) {
+        return std::string(action);
+    }
+    if (g_pad_bindings[i]->empty()) {
+        return {};
+    }
+    std::size_t shown = ButtonAction(PadSourceButton(g_pad_bindings[i]->front(), g_pad_type));
+    return shown == kActionCount ? std::string() : std::string(kActions[shown].name);
 }
 
 InputGlyphFamily InputActiveGlyphFamily() {
     return g_last_keyboard ? InputGlyphFamily::Keyboard : g_pad_family;
 }
+
+InputGlyphFamily InputGamepadGlyphFamily() { return g_pad_family; }
 
 std::string InputPrimaryBindingName(std::string_view action) {
     EnsureBindings();
