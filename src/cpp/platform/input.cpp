@@ -86,6 +86,7 @@ constexpr Action kActions[] = {
     {"fps_toggle",   ActionKind::Host,     0,              kAxisLeftX,  0,  "F3"},
     {"developer_menu", ActionKind::Host,   0,              kAxisLeftX,  0,  "Gamepad:paddle2"},
     {"debug_menu",   ActionKind::Host,     0,              kAxisLeftX,  0,  "F1, Gamepad:paddle1"},
+    {"mode_debug_menu", ActionKind::Host,  0,              kAxisLeftX,  0,  "F2"},
     {"gyro_hold",    ActionKind::Host,     0,              kAxisLeftX,  0,  "Gamepad:paddle4"},
     {"zoom_reset",   ActionKind::Host,     0,              kAxisLeftX,  0,  "Mouse3"},
 };
@@ -113,7 +114,7 @@ constexpr SDL_GamepadButton kGamepadButtons[] = {
 // clang-format on
 
 constexpr std::size_t kActionCount = std::size(kActions);
-constexpr std::size_t kFirstHostAction = kActionCount - 5;
+constexpr std::size_t kFirstHostAction = kActionCount - 6;
 constexpr std::size_t kHostActionCount = kActionCount - kFirstHostAction;
 static_assert(kActions[kFirstHostAction].name == "fps_toggle");
 static_assert(static_cast<std::size_t>(InputHostAction::FpsToggle) == 0);

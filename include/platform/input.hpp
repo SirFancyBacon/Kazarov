@@ -265,6 +265,8 @@ enum class InputHostAction {
     FpsToggle,
     DeveloperMenu,
     DebugMenu,
+    // A game's in-mode debug menu (Dark Cloud 2: R3 with its debug flag on).
+    ModeDebugMenu,
     GyroHold,
     ZoomReset,
 };
