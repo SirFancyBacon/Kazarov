@@ -72,6 +72,8 @@ struct HostSettings {
     bool                          mouse_invert_y = false;
     bool                          mouse_capture = true;
     bool                          mouse_zoom = false;
+    // Keyboard movement walks by default and the walk binding runs instead.
+    bool                          keyboard_walk = false;
     // A DualSense's touchpad as the menus' mouse, at this speed (1 is a swipe across the pad for 1500
     // window pixels), and its lightbar showing the active character's life.
     bool                          touchpad = true;
