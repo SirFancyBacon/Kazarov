@@ -16,6 +16,8 @@ pub mod audio;
 pub mod configs;
 #[path = "configs_native.rs"]
 pub mod configs_native;
+#[path = "hd2.rs"]
+pub mod hd2;
 #[path = "inventory.rs"]
 pub mod inventory;
 #[path = "models.rs"]

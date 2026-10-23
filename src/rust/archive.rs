@@ -12,24 +12,25 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-const SECTOR: u64 = 2048;
+pub(crate) const SECTOR: u64 = 2048;
 const CHUNK: usize = 4 << 20;
 
-struct ReadOnlyCursor<'a>(std::io::Cursor<&'a [u8]>);
+/// A disc image the ISO reader may read and seek but never write.
+pub(crate) struct ReadOnly<T>(pub(crate) T);
 
-impl Read for ReadOnlyCursor<'_> {
+impl<T: Read> Read for ReadOnly<T> {
     fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
         self.0.read(output)
     }
 }
 
-impl Seek for ReadOnlyCursor<'_> {
+impl<T: Seek> Seek for ReadOnly<T> {
     fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
         self.0.seek(position)
     }
 }
 
-impl Write for ReadOnlyCursor<'_> {
+impl<T> Write for ReadOnly<T> {
     fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
         Err(std::io::ErrorKind::PermissionDenied.into())
     }
@@ -39,13 +40,13 @@ impl Write for ReadOnlyCursor<'_> {
     }
 }
 
-impl gpt_disk_io::ReadWriteSeek for ReadOnlyCursor<'_> {}
+impl<T: Read + Seek> gpt_disk_io::ReadWriteSeek for ReadOnly<T> {}
 
 fn error(message: impl Into<String>) -> CoreError {
     CoreError(message.into())
 }
 
-fn le32(bytes: &[u8]) -> CoreResult<u32> {
+pub(crate) fn le32(bytes: &[u8]) -> CoreResult<u32> {
     Ok(u32::from_le_bytes(
         bytes
             .get(..4)
@@ -59,7 +60,7 @@ fn ascii_fold(value: u8) -> u8 {
     value.to_ascii_lowercase()
 }
 
-fn folded(bytes: &[u8]) -> Vec<u8> {
+pub(crate) fn folded(bytes: &[u8]) -> Vec<u8> {
     bytes
         .iter()
         .map(|&b| if b == b'\\' { b'/' } else { ascii_fold(b) })
@@ -67,7 +68,7 @@ fn folded(bytes: &[u8]) -> Vec<u8> {
         .collect()
 }
 
-fn disk_name(bytes: &[u8]) -> String {
+pub(crate) fn disk_name(bytes: &[u8]) -> String {
     let mut name = String::with_capacity(bytes.len());
     for &byte in bytes {
         if byte == b'\\' {
@@ -81,7 +82,7 @@ fn disk_name(bytes: &[u8]) -> String {
     name
 }
 
-fn safe_relative(name: &str) -> bool {
+pub(crate) fn safe_relative(name: &str) -> bool {
     !name.is_empty()
         && !name.ends_with('/')
         && name
@@ -89,7 +90,7 @@ fn safe_relative(name: &str) -> bool {
             .all(|part| !part.is_empty() && part != "." && part != ".." && !part.contains(':'))
 }
 
-fn nul_name(bytes: &[u8], offset: usize, label: &str) -> CoreResult<Vec<u8>> {
+pub(crate) fn nul_name(bytes: &[u8], offset: usize, label: &str) -> CoreResult<Vec<u8>> {
     let tail = bytes
         .get(offset..)
         .ok_or_else(|| error(format!("{label}: name offset outside file")))?;
@@ -101,14 +102,14 @@ fn nul_name(bytes: &[u8], offset: usize, label: &str) -> CoreResult<Vec<u8>> {
 }
 
 #[derive(Clone, Debug)]
-struct Extent {
-    file: PathBuf,
-    offset: u64,
-    size: u64,
+pub(crate) struct Extent {
+    pub(crate) file: PathBuf,
+    pub(crate) offset: u64,
+    pub(crate) size: u64,
 }
 
 impl Extent {
-    fn read(&self) -> CoreResult<Vec<u8>> {
+    pub(crate) fn read(&self) -> CoreResult<Vec<u8>> {
         let count = usize::try_from(self.size).map_err(|_| error("extent too large"))?;
         if count > (512 << 20) {
             return Err(error("metadata extent exceeds 512 MiB"));
@@ -164,7 +165,7 @@ impl Archive {
     }
 }
 
-fn image_extent(image: &Path, entry: &FileEntry) -> CoreResult<Extent> {
+pub(crate) fn image_extent(image: &Path, entry: &FileEntry) -> CoreResult<Extent> {
     if entry.file_unit_size != 0 || entry.interleave_gap != 0 || entry.flags.not_final {
         return Err(error(format!(
             "ISO extent for {} is interleaved or multi-extent",
@@ -192,7 +193,7 @@ fn image_extent(image: &Path, entry: &FileEntry) -> CoreResult<Extent> {
 fn open_image_bytes(image: &Path, bytes: &[u8]) -> CoreResult<Archive> {
     let block_size =
         BlockSize::new(SECTOR as u32).ok_or_else(|| error("invalid ISO sector size"))?;
-    let mut io = BlockIoAdapter::new(ReadOnlyCursor(std::io::Cursor::new(bytes)), block_size);
+    let mut io = BlockIoAdapter::new(ReadOnly(std::io::Cursor::new(bytes)), block_size);
     let volume = mount(&mut io, 0)
         .map_err(|cause| error(format!("{}: ISO mount: {cause}", image.display())))?;
     if u64::from(volume.logical_block_size) != SECTOR {
@@ -264,7 +265,7 @@ fn open_image(image: &Path) -> CoreResult<Archive> {
     open_image_bytes(image, &fs::read(image)?)
 }
 
-fn directory_file(root: &Path, name: &str) -> CoreResult<Extent> {
+pub(crate) fn directory_file(root: &Path, name: &str) -> CoreResult<Extent> {
     for entry in fs::read_dir(root)? {
         let entry = entry?;
         if entry.file_type()?.is_file()
@@ -818,7 +819,7 @@ fn plan_archive(archive: &Archive) -> CoreResult<(Vec<Planned>, u64, u64)> {
     Ok((plan, files, bytes))
 }
 
-fn copy_extent(extent: &Extent, target: &Path) -> CoreResult<()> {
+pub(crate) fn copy_extent(extent: &Extent, target: &Path) -> CoreResult<()> {
     fs::create_dir_all(
         target
             .parent()
@@ -873,7 +874,7 @@ fn copy_extent(extent: &Extent, target: &Path) -> CoreResult<()> {
     result
 }
 
-fn extent_matches(extent: &Extent, target: &Path) -> CoreResult<bool> {
+pub(crate) fn extent_matches(extent: &Extent, target: &Path) -> CoreResult<bool> {
     let target_meta = match fs::metadata(target) {
         Ok(meta) => meta,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),

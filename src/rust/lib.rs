@@ -16,6 +16,17 @@ mod ffi {
         textures: u64,
     }
 
+    struct Hd2Report {
+        files: u64,
+        bytes: u64,
+        written: u64,
+        kept: u64,
+        duplicates: u64,
+        warnings: u64,
+        omitted: u64,
+        release: String,
+    }
+
     enum ScriptPublicationPolicy {
         Retain,
         LuauOnly,
@@ -32,6 +43,9 @@ mod ffi {
         ) -> Result<ExtractReport>;
         fn list(source: &str) -> Result<String>;
         fn sound(source: &str) -> Result<String>;
+        /// Unpacks a disc indexed by DATA.HD2 (Dark Cloud) into the retail tree under `data_out`.
+        fn extract_hd2(source: &str, data_out: &str, jobs: usize) -> Result<Hd2Report>;
+        fn list_hd2(source: &str) -> Result<String>;
         fn refresh_configs(source: &str, config_dir: &str) -> Result<usize>;
         fn audit_configs(source: &str, config_dir: &str) -> Result<String>;
         fn configs_parity(
@@ -184,6 +198,28 @@ fn list(source: &str) -> Result<String, core::CoreError> {
 
 fn sound(source: &str) -> Result<String, core::CoreError> {
     core::sound(source.as_ref())
+}
+
+fn extract_hd2(
+    source: &str,
+    data_out: &str,
+    jobs: usize,
+) -> Result<ffi::Hd2Report, core::CoreError> {
+    let report = core::hd2::extract(source.as_ref(), data_out.as_ref(), jobs)?;
+    Ok(ffi::Hd2Report {
+        files: report.files,
+        bytes: report.bytes,
+        written: report.written,
+        kept: report.kept,
+        duplicates: report.duplicates,
+        warnings: report.warnings,
+        omitted: report.omitted,
+        release: report.release.into(),
+    })
+}
+
+fn list_hd2(source: &str) -> Result<String, core::CoreError> {
+    core::hd2::list_text(source.as_ref())
 }
 
 fn generated(path: &str) -> bool {

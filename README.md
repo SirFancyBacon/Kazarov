@@ -367,6 +367,18 @@ in one `<file>.gltf.bin` beside it. Only ChronicleTwo uses these
 modules; Chronicle's pinned revision does not contain the Rust publisher. Changes
 to the published format bump `data_version.json`.
 
+## Dark Cloud discs
+
+`src/rust/hd2.rs` unpacks Dark Cloud's disc, an ISO image or a folder holding `DATA.DAT` and its
+index `DATA.HD2`, into the retail files Chronicle reads: every file the game can reach (the first
+of each path, as the game's search finds), a copy of the index as `data.hd2`, the fixes its
+releases need (beside the originals or under `normalized/`) and `languages.json`, naming the
+release and the languages it carries. Files named outside ASCII are left out: the game loads
+none, and they are the developers' leftovers (a note, a shortcut and empty files labelling map
+folders). Files already there byte for byte are kept. The bridge
+exports it as `extract_hd2(source, data_out, jobs)`, and `list_hd2(source)` lists the index.
+Nothing is converted yet. `KAZAROV_HD2_ISO` points the opt-in retail test at a disc image.
+
 ## License
 
 Kazarov is released under the MIT License (see `LICENSE`), copyright TheMoonPeople.
