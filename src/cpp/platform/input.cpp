@@ -30,6 +30,8 @@ enum class ActionKind {
     Button,
     HalfAxis,
     Axis,
+    // Held, keyboard movement on the left stick walks instead of running (input.keyboard_walk swaps them).
+    Walk,
     Host,
 };
 
@@ -76,13 +78,15 @@ constexpr Action kActions[] = {
     {"rx+",          ActionKind::HalfAxis, 0,              kAxisRightX, 1,  "L"},
     {"ry-",          ActionKind::HalfAxis, 0,              kAxisRightY, -1, "I"},
     {"ry+",          ActionKind::HalfAxis, 0,              kAxisRightY, 1,  "K"},
+    {"walk",         ActionKind::Walk,     0,              kAxisLeftX,  0,  "Left Shift"},
     {"lx",           ActionKind::Axis,     0,              kAxisLeftX,  0,  ""},
     {"ly",           ActionKind::Axis,     0,              kAxisLeftY,  0,  ""},
     {"rx",           ActionKind::Axis,     0,              kAxisRightX, 0,  ""},
     {"ry",           ActionKind::Axis,     0,              kAxisRightY, 0,  ""},
     {"fps_toggle",   ActionKind::Host,     0,              kAxisLeftX,  0,  "F3"},
     {"developer_menu", ActionKind::Host,   0,              kAxisLeftX,  0,  "Gamepad:paddle2"},
-    {"debug_menu",   ActionKind::Host,     0,              kAxisLeftX,  0,  "Gamepad:paddle1"},
+    {"debug_menu",   ActionKind::Host,     0,              kAxisLeftX,  0,  "F1, Gamepad:paddle1"},
+    {"mode_debug_menu", ActionKind::Host,  0,              kAxisLeftX,  0,  "F2"},
     {"gyro_hold",    ActionKind::Host,     0,              kAxisLeftX,  0,  "Gamepad:paddle4"},
     {"zoom_reset",   ActionKind::Host,     0,              kAxisLeftX,  0,  "Mouse3"},
 };
@@ -110,7 +114,7 @@ constexpr SDL_GamepadButton kGamepadButtons[] = {
 // clang-format on
 
 constexpr std::size_t kActionCount = std::size(kActions);
-constexpr std::size_t kFirstHostAction = kActionCount - 5;
+constexpr std::size_t kFirstHostAction = kActionCount - 6;
 constexpr std::size_t kHostActionCount = kActionCount - kFirstHostAction;
 static_assert(kActions[kFirstHostAction].name == "fps_toggle");
 static_assert(static_cast<std::size_t>(InputHostAction::FpsToggle) == 0);
@@ -123,6 +127,10 @@ constexpr int kDeadZoneAbove = 49;
 constexpr int kDeadZoneBelow = 50;
 constexpr int kLiveSpan = 78;
 constexpr int kGameAxisRange = 128;
+
+// Keyboard walking deflects the left stick this far: past the dead zone, short of the town's run
+// threshold (0.85, see StickPairToBytes).
+constexpr float kWalkDeflection = 0.5f;
 
 // The DualShock 2's L2 and R2 are digital in the mode the game uses.
 constexpr Sint16 kTriggerThreshold = SDL_JOYSTICK_AXIS_MAX / 4;
@@ -201,6 +209,11 @@ bool  g_menu_mouse = false;
 bool  g_menu_navigation = false;
 bool  g_keyboard_stick_navigation = true;
 bool  g_developer_menu = false;
+bool  g_keyboard_walk = false;
+// InputSetTextEntry: whether it is on, pad reads since it was last restated, and what was typed.
+bool        g_text_entry = false;
+int         g_text_entry_reads = 0;
+std::string g_text;
 float g_menu_dx = 0.0f;
 float g_menu_dy = 0.0f;
 // A DualSense's touchpad as a menu pointer (platform/touchpad.hpp): its motion and scroll since the
@@ -568,6 +581,21 @@ bool GamepadButtonHeld(int button) {
     });
 }
 
+// What a key types with the given modifiers, or 0 when it types no printable ASCII character.
+char TypedCharacter(int scancode, SDL_Keymod mod) {
+    if (scancode == SDL_SCANCODE_BACKSPACE) {
+        return '\b';
+    }
+    if (scancode == SDL_SCANCODE_DELETE) {
+        return '\x7f';
+    }
+    if (scancode == SDL_SCANCODE_RETURN) {
+        return '\r';
+    }
+    SDL_Keycode key = SDL_GetKeyFromScancode(static_cast<SDL_Scancode>(scancode), mod, false);
+    return key >= 0x20 && key < 0x7F ? static_cast<char>(key) : 0;
+}
+
 bool KeyBound(std::size_t host, int scancode) {
     return std::ranges::any_of(g_bindings[kFirstHostAction + host], [&](const Source &source) {
         return source.kind == Source::Key && source.code == scancode;
@@ -733,6 +761,7 @@ void InputApplyConfig(const HostSettings &config) {
     }
     InputSetMouseSettings(mouse);
     g_mouse_zoom = config.mouse_zoom;
+    g_keyboard_walk = config.keyboard_walk;
     g_mouse_look.zoom = 0.0f;
     g_mouse_look.zoom_reset = false;
     g_scripted_wheel = 0.0f;
@@ -750,6 +779,9 @@ void InputShutdown() {
     g_menu_navigation = false;
     g_keyboard_stick_navigation = true;
     g_developer_menu = false;
+    g_keyboard_walk = false;
+    g_text_entry = false;
+    g_text.clear();
     g_menu_dx = 0.0f;
     g_menu_dy = 0.0f;
     g_touchpad.Reset();
@@ -870,6 +902,12 @@ void InputHandleEvent(const SDL_Event &event) {
             if (event.key.scancode < SDL_SCANCODE_COUNT) {
                 g_keys[event.key.scancode] = event.key.down;
             }
+            if (event.key.down && g_text_entry && event.key.scancode < SDL_SCANCODE_COUNT) {
+                char typed = TypedCharacter(event.key.scancode, event.key.mod);
+                if (typed != 0) {
+                    g_text.push_back(typed);
+                }
+            }
             if (event.key.down && !event.key.repeat) {
                 EnsureBindings();
                 for (std::size_t host = 0; host < kHostActionCount; ++host) {
@@ -921,6 +959,10 @@ void InputLatchPad(int pad) {
     }
     g_stick_live = g_stick_read_serial == g_latch_serial;
     ++g_latch_serial;
+    if (g_text_entry && ++g_text_entry_reads > 2) {
+        g_text_entry = false;
+        g_text.clear();
+    }
     // Motion since the previous read, per tick: a frame that spans several ticks (or a load
     // between reads) turns the camera at the mouse's speed instead of all at once, and a mouse that
     // stopped reads as centred at the next read.
@@ -1006,6 +1048,18 @@ void InputSetDeveloperMenu(bool on) {
 
 bool InputDeveloperMenu() {
     return g_developer_menu;
+}
+
+void InputSetTextEntry(bool on) {
+    if (on != g_text_entry) {
+        g_text.clear();
+    }
+    g_text_entry = on;
+    g_text_entry_reads = 0;
+}
+
+std::string InputTakeText() {
+    return std::exchange(g_text, {});
 }
 
 InputMenuMouse InputTakeMenuMouse() {
@@ -1160,6 +1214,7 @@ InputPadState InputApplyKeyboardMouse(InputPadState base, const InputKeyboardMou
     EnsureBindings();
     bool       keyboard_left = false;
     const auto compose = [&](InputPadState base, bool include_keys) {
+        bool                 walk = false;
         std::array<int, 4>   push{};
         std::array<float, 4> mouse{};
         float                mouse_y = g_mouse.invert_y ? -held.mouse_dy : held.mouse_dy;
@@ -1172,6 +1227,9 @@ InputPadState InputApplyKeyboardMouse(InputPadState base, const InputKeyboardMou
                 }
                 switch (source.kind) {
                     case Source::Key:
+                        if (g_text_entry && TypedCharacter(source.code, SDL_KMOD_NONE) != 0) {
+                            break;
+                        }
                         key_down |= include_keys && std::ranges::contains(held.keys, source.code);
                         down |= key_down;
                         break;
@@ -1194,10 +1252,15 @@ InputPadState InputApplyKeyboardMouse(InputPadState base, const InputKeyboardMou
             }
             if (kActions[i].kind == ActionKind::Button) {
                 base.buttons |= kActions[i].button;
+            } else if (kActions[i].kind == ActionKind::Walk) {
+                walk = true;
             } else if (kActions[i].kind == ActionKind::HalfAxis) {
                 push[kActions[i].axis] += kActions[i].direction;
                 keyboard_left |= key_down && kActions[i].axis <= kAxisLeftY;
             }
+        }
+        if (g_text_entry && include_keys && std::ranges::contains(held.keys, SDL_SCANCODE_RETURN)) {
+            base.buttons |= kInputCross;
         }
         if (include_keys && std::ranges::contains(held.keys, SDL_SCANCODE_ESCAPE)) {
             base.buttons |= g_menu_navigation ? kInputCircle : kInputTriangle;
@@ -1210,6 +1273,11 @@ InputPadState InputApplyKeyboardMouse(InputPadState base, const InputKeyboardMou
             if (key_x != 0.0f && key_y != 0.0f) {
                 key_x *= std::numbers::sqrt2_v<float> / 2.0f;
                 key_y *= std::numbers::sqrt2_v<float> / 2.0f;
+            }
+            // Menus keep full deflection, so their stick threshold still reads the keys.
+            if (x == kAxisLeftX && walk != g_keyboard_walk && !g_menu_navigation) {
+                key_x *= kWalkDeflection;
+                key_y *= kWalkDeflection;
             }
             deflection[x] = std::clamp(key_x + mouse[x], -1.0f, 1.0f);
             deflection[x + 1] = std::clamp(key_y + mouse[x + 1], -1.0f, 1.0f);

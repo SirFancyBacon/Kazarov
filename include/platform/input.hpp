@@ -194,6 +194,15 @@ void InputSetKeyboardStickNavigation(bool on);
 void InputSetDeveloperMenu(bool on);
 bool InputDeveloperMenu();
 
+// A text field (the game's name entry) takes the keyboard: while on, the keys that type a printable
+// ASCII character, Backspace, Delete and Return no longer press their pad bindings, Return presses
+// Cross, and each key press (repeats included) queues its character, '\b' for Backspace, '\x7f'
+// for Delete and '\r' for Return.
+// It switches itself off when two pad reads pass without it being restated.
+void InputSetTextEntry(bool on);
+// Takes the characters queued since the last call.
+std::string InputTakeText();
+
 // Takes the pointer's motion and wheel since the last call, live and scripted.
 InputMenuMouse InputTakeMenuMouse();
 
@@ -256,6 +265,8 @@ enum class InputHostAction {
     FpsToggle,
     DeveloperMenu,
     DebugMenu,
+    // A game's in-mode debug menu (Dark Cloud 2: R3 with its debug flag on).
+    ModeDebugMenu,
     GyroHold,
     ZoomReset,
 };
