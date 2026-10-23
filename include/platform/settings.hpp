@@ -61,9 +61,7 @@ struct HostSettings {
     // audio.soundtrack "custom": play recordings from soundtrack/ beside save/ and data/.
     bool                          soundtrack = false;
     std::vector<ConfigKeyBinding> key_bindings;
-    // The controller's bindings, apart from the keyboard's: gamepad button names per action
-    // (InputBindPadButtons). An action left out keeps its default.
-    std::vector<ConfigKeyBinding> pad_bindings;
+    std::vector<ConfigKeyBinding> pad_bindings; /**< Overrides controller buttons per action while omitted actions retain their defaults. */
     float                         mouse_sensitivity = 0.1f;
     float                         stick_sensitivity = 1.33f;
     bool                          stick_invert_x = false;
@@ -75,8 +73,7 @@ struct HostSettings {
     bool                          mouse_invert_y = false;
     bool                          mouse_capture = true;
     bool                          mouse_zoom = false;
-    // Keyboard movement walks by default and the walk binding runs instead.
-    bool keyboard_walk = false;
+    bool                          keyboard_walk = false; /**< Makes keyboard movement walk by default and the walk binding run instead. */
     // A DualSense's touchpad as the menus' mouse, at this speed (1 is a swipe across the pad for 1500
     // window pixels), and its lightbar showing the active character's life.
     bool  touchpad = true;

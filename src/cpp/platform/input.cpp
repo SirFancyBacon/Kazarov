@@ -263,7 +263,9 @@ std::string_view Trim(std::string_view text) {
     return text;
 }
 
-// A gamepad button or trigger by SDL's name, with or without a Gamepad: prefix.
+/**
+ * Parses an SDL controller button or trigger name with an optional Gamepad prefix.
+ */
 bool ParsePadSource(std::string_view name, Source &source) {
     std::string lower = Lower(Trim(name));
     if (lower.starts_with("gamepad:")) {
@@ -446,11 +448,17 @@ bool GyroActive() {
     }
 }
 
+/**
+ * Reports whether a controller trigger exceeds the digital button threshold.
+ */
 bool TriggerHeld(SDL_Gamepad *gamepad, int trigger) {
     SDL_GamepadAxis axis = trigger == 0 ? SDL_GAMEPAD_AXIS_LEFT_TRIGGER : SDL_GAMEPAD_AXIS_RIGHT_TRIGGER;
     return SDL_GetGamepadAxis(gamepad, axis) > kTriggerThreshold;
 }
 
+/**
+ * Reports whether a physical controller holds a bound button or trigger.
+ */
 bool PadSourceHeld(SDL_Gamepad *gamepad, const Source &source) {
     if (source.kind == Source::GamepadTrigger) {
         return TriggerHeld(gamepad, source.code);
@@ -459,7 +467,9 @@ bool PadSourceHeld(SDL_Gamepad *gamepad, const Source &source) {
            SDL_GetGamepadButton(gamepad, static_cast<SDL_GamepadButton>(source.code));
 }
 
-// The pad's button that a gamepad source presses on a pad of this type with the default layout, or 0.
+/**
+ * Maps a physical controller source to the default layout's gamepad button.
+ */
 std::uint16_t PadSourceButton(const Source &source, SDL_GamepadType type) {
     if (source.kind == Source::GamepadTrigger) {
         return source.code == 0 ? kInputL2 : kInputR2;
@@ -469,7 +479,9 @@ std::uint16_t PadSourceButton(const Source &source, SDL_GamepadType type) {
                : 0;
 }
 
-// The button action that presses a pad button, or kActionCount.
+/**
+ * Finds the action associated with a logical gamepad button.
+ */
 std::size_t ButtonAction(std::uint16_t button) {
     for (std::size_t i = 0; i < kActionCount; ++i) {
         if (kActions[i].kind == ActionKind::Button && kActions[i].button == button) {
@@ -479,13 +491,17 @@ std::size_t ButtonAction(std::uint16_t button) {
     return kActionCount;
 }
 
-// Whether the action pressing a pad button keeps the pad's own layout, having no controller binding.
+/**
+ * Reports whether a logical gamepad button retains the controller's default layout.
+ */
 bool PadDefault(std::uint16_t button) {
     std::size_t i = ButtonAction(button);
     return i == kActionCount || !g_pad_bindings[i];
 }
 
-// The gamepad buttons and triggers that press an action on a pad of this type.
+/**
+ * Returns an action's configured or default physical controller sources.
+ */
 std::vector<Source> PadSources(std::size_t i, SDL_GamepadType type) {
     const auto &binding = g_pad_bindings[i];
     if (binding.has_value()) {
@@ -677,6 +693,9 @@ void SendRumble(int pad) {
     slot.rumble_time = SDL_GetTicks();
 }
 
+/**
+ * Reports whether a connected controller or the touch overlay holds a bound controller source.
+ */
 bool GamepadSourceHeld(const Source &source) {
     const bool held = std::ranges::any_of(g_slots, [&](const PadSlot &slot) {
         return slot.gamepad != nullptr && PadSourceHeld(slot.gamepad, source);
@@ -690,7 +709,9 @@ bool GamepadSourceHeld(const Source &source) {
 #endif
 }
 
-// What a key types with the given modifiers, or 0 when it types no printable ASCII character.
+/**
+ * Converts a physical key and its modifiers into an ASCII character or editing command.
+ */
 char TypedCharacter(int scancode, SDL_Keymod mod) {
     if (scancode == SDL_SCANCODE_BACKSPACE) {
         return '\b';
@@ -808,7 +829,9 @@ std::uint16_t BindGamepadHeld() {
     return held;
 }
 
-// Every gamepad button and trigger held now, as g_bind_pad_all keeps them.
+/**
+ * Collects held controller buttons and triggers for binding capture.
+ */
 std::uint32_t BindPadAllHeld() {
     std::uint32_t held = 0;
     for (const PadSlot &slot : g_slots) {
@@ -838,7 +861,9 @@ void SnapshotBind() {
     g_bind_pad_all = BindPadAllHeld();
 }
 
-// A gamepad source by the name InputBindPadButtons takes.
+/**
+ * Names a physical controller button or trigger for binding configuration.
+ */
 std::string PadSourceName(const Source &source) {
     if (source.kind == Source::GamepadTrigger) {
         return source.code == 0 ? "lefttrigger" : "righttrigger";
@@ -847,6 +872,9 @@ std::string PadSourceName(const Source &source) {
     return name != nullptr ? name : "";
 }
 
+/**
+ * Finds a binding action by its configured name.
+ */
 std::size_t FindAction(std::string_view action) {
     for (std::size_t i = 0; i < kActionCount; ++i) {
         if (kActions[i].name == action) {
@@ -856,6 +884,9 @@ std::size_t FindAction(std::string_view action) {
     return kActionCount;
 }
 
+/**
+ * Reports whether a binding action accepts physical controller buttons.
+ */
 bool TakesPad(std::size_t i) {
     return kActions[i].kind == ActionKind::Button || kActions[i].kind == ActionKind::Host;
 }
