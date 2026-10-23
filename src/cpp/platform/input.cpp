@@ -49,9 +49,7 @@ struct Action {
     Axis             axis;
     int              direction;
     std::string_view defaults;
-    // The controller's default for a host action. The pad's buttons default to the pad's own layout
-    // (GamepadButtonPad, gamepad_map.hpp) instead.
-    std::string_view pad_defaults{};
+    std::string_view pad_defaults; /**< Default controller source for a host action. */
 };
 
 // The game-side reasons for each default are in docs/PC.md ("Keyboard and mouse").
