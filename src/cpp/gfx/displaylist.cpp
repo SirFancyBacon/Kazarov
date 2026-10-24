@@ -1391,7 +1391,15 @@ void Replay(const DisplayList &list, bool canonical, const Overrides *overrides,
                         Clear(e.color, e.rgba, e.depth, e.z, rect);
                     }
                 } else if constexpr (std::is_same_v<T, TargetEntry>) {
-                    SetRenderTarget(canonical ? e.target : GrabbedTwin(e.target));
+                    // A display replay draws into a target's twin, leaving the canonical contents for later ticks.
+                    TextureHandle target = e.target;
+                    if (!canonical) {
+                        TextureHandle twin = ActivateGrabTwin(target, true);
+                        if (twin != kNullTexture) {
+                            target = twin;
+                        }
+                    }
+                    SetRenderTarget(target);
                 } else if (canonical) {
                     if constexpr (std::is_same_v<T, CopyEntry>) {
                         if (e.kind == CopyEntry::Copy) {
