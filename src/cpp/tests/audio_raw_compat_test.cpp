@@ -106,8 +106,7 @@ std::vector<std::uint8_t> RawBankHd() {
   return result;
 }
 
-std::vector<std::uint8_t> RawSq(int note, int velocity, int ticks,
-                                bool short_note_off = false) {
+std::vector<std::uint8_t> RawSq(int note, int velocity, int ticks) {
   std::vector<std::uint8_t> events{0x00,
                                    0xC0,
                                    0x00,
@@ -116,12 +115,9 @@ std::vector<std::uint8_t> RawSq(int note, int velocity, int ticks,
                                    static_cast<std::uint8_t>(note),
                                    static_cast<std::uint8_t>(velocity)};
   AppendVarLen(events, static_cast<std::uint32_t>(ticks));
-  events.push_back(0x80);
-  events.push_back(static_cast<std::uint8_t>(note));
-  if (!short_note_off) {
-    events.push_back(0x00);
-  }
-  events.insert(events.end(), {0x00, 0xFF, 0x2F, 0x00});
+  // A retail note-off carries the note alone; the 0x00 after it is the end event's delta.
+  events.insert(events.end(), {0x80, static_cast<std::uint8_t>(note), 0x00,
+                               0xFF, 0x2F, 0x00});
 
   constexpr std::size_t block = 0x14;
   constexpr std::size_t events_at = block + 6;
@@ -189,9 +185,8 @@ TEST(AudioRawCompatibility,
   EXPECT_EQ(raw_layers[0].vag->loops, json_layers[0].vag->loops);
 }
 
-TEST(AudioRawCompatibility, ShortNoteOffDialectReadsNoteOnlyNoteOffs) {
-  const auto raw = audio::SqFile::Create(RawSq(60, 100, 480, true),
-                                         {.short_note_off = true});
+TEST(AudioRawCompatibility, NoteOffReadsItsNoteAlone) {
+  const auto raw = audio::SqFile::Create(RawSq(60, 100, 480));
   ASSERT_NE(raw, nullptr);
   const auto events = raw->Events(raw->Songs()[0]);
   ASSERT_EQ(events.size(), 4);
