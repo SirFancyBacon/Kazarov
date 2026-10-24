@@ -2904,23 +2904,23 @@ mod tests {
         b.pop();
         assert!(sshd(&b).is_err());
     }
+    fn pes(id: u8, pts: u64, payload: &[u8]) -> Vec<u8> {
+        let timestamp = [
+            0x21 | ((pts >> 29) as u8 & 14),
+            (pts >> 22) as u8,
+            ((pts >> 14) as u8 & 254) | 1,
+            (pts >> 7) as u8,
+            ((pts << 1) as u8) | 1,
+        ];
+        let mut out = vec![0, 0, 1, id];
+        out.extend(((8 + payload.len()) as u16).to_be_bytes());
+        out.extend([128, 128, 5]);
+        out.extend(timestamp);
+        out.extend(payload);
+        out
+    }
     #[test]
     fn movie_pts_aligns_audio_and_trims_only_frames_before_video() {
-        fn pes(id: u8, pts: u64, payload: &[u8]) -> Vec<u8> {
-            let timestamp = [
-                0x21 | ((pts >> 29) as u8 & 14),
-                (pts >> 22) as u8,
-                ((pts >> 14) as u8 & 254) | 1,
-                (pts >> 7) as u8,
-                ((pts << 1) as u8) | 1,
-            ];
-            let mut out = vec![0, 0, 1, id];
-            out.extend(((8 + payload.len()) as u16).to_be_bytes());
-            out.extend([128, 128, 5]);
-            out.extend(timestamp);
-            out.extend(payload);
-            out
-        }
         let mut pcm = Vec::from(&b"SShd"[..]);
         pcm.extend(24u32.to_le_bytes());
         for value in [1u32, 48000, 1, 4, 0, 0] {
@@ -2945,6 +2945,105 @@ mod tests {
         assert_eq!(timing["offset_frames"], -240);
         assert_eq!(u32le(&wave, 40).unwrap(), 480);
         assert_eq!(u16le(&wave, 44).unwrap(), 240);
+    }
+    /// A PSS video stream names no codec, so FFmpeg identifies it by its content; a minimal build
+    /// without the mpegvideo demuxer cannot, and every retail movie failed to mux.
+    #[cfg(kazarov_ffmpeg)]
+    #[test]
+    fn movie_mux_identifies_pss_video_by_its_content() {
+        // Fields of (value, width), most significant bit first, zero-padded to a whole byte.
+        fn bits(fields: &[(u32, u32)]) -> Vec<u8> {
+            let mut out = Vec::new();
+            let mut used = 0;
+            for &(value, width) in fields {
+                for bit in (0..width).rev() {
+                    if used % 8 == 0 {
+                        out.push(0);
+                    }
+                    *out.last_mut().unwrap() |= ((value >> bit & 1) as u8) << (7 - used % 8);
+                    used += 1;
+                }
+            }
+            out
+        }
+        let start = |code: u8| vec![0, 0, 1, code];
+        let sequence = [
+            start(179),
+            // 16x16, square pixels, 25 fps, bit rate, marker, VBV size, no quantiser matrices.
+            bits(&[
+                (16, 12),
+                (16, 12),
+                (1, 4),
+                (3, 4),
+                (400, 18),
+                (1, 1),
+                (8, 10),
+                (0, 3),
+            ]),
+            start(181),
+            // Main profile at main level, progressive 4:2:0.
+            bits(&[(1, 4), (72, 8), (1, 1), (1, 2), (0, 16), (1, 1), (0, 16)]),
+        ]
+        .concat();
+        // One intra macroblock whose four luma and two chroma blocks keep the predicted DC: grey.
+        let mut slice = vec![(8, 5), (0, 1), (1, 1), (1, 1)];
+        slice.extend([(4, 3), (2, 2)].repeat(4));
+        slice.extend([(0, 2), (2, 2)].repeat(2));
+        let picture = |number: u32| {
+            [
+                start(0),
+                bits(&[(number, 10), (1, 3), (65535, 16), (0, 1)]),
+                start(181),
+                // Frame picture, frame DCT, progressive frame.
+                bits(&[
+                    (8, 4),
+                    (65535, 16),
+                    (0, 2),
+                    (3, 2),
+                    (0, 1),
+                    (1, 1),
+                    (0, 5),
+                    (1, 1),
+                    (1, 1),
+                    (0, 1),
+                ]),
+                start(1),
+                bits(&slice),
+            ]
+            .concat()
+        };
+        let pack = [
+            start(186),
+            bits(&[
+                (1, 2),
+                (0, 3),
+                (1, 1),
+                (0, 15),
+                (1, 1),
+                (0, 15),
+                (1, 1),
+                (0, 9),
+                (1, 1),
+                (1000, 22),
+                (3, 2),
+                (31, 5),
+                (0, 3),
+            ]),
+        ]
+        .concat();
+        let mut pss = Vec::new();
+        for number in 0..3 {
+            let video = if number == 0 {
+                [sequence.clone(), picture(number)].concat()
+            } else {
+                picture(number)
+            };
+            pss.extend(&pack);
+            pss.extend(pes(224, 90000 + 3600 * u64::from(number), &video));
+        }
+        pss.extend(start(185));
+        let mp4 = movie_mp4_memory(&pss).unwrap();
+        assert_eq!(&mp4[4..8], b"ftyp");
     }
     #[test]
     fn unknown_codec_fails() {

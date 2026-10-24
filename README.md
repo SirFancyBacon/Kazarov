@@ -194,17 +194,19 @@ Built locally from the Kazarov root, with `docker build --platform linux/amd64 -
 
 ## FFmpeg
 
-Kazarov ships no FFmpeg code. `tools/ffmpeg/kz-ffmpeg` (launcher `scripts/build/kz-ffmpeg`) builds FFmpeg 9.0.2 from the pinned ffmpeg.org tarball, checked against its SHA-256, with only the `mpeg2video` decoder and the `mpegvideo` parser:
+Kazarov ships no FFmpeg code. `tools/ffmpeg/kz-ffmpeg` (launcher `scripts/build/kz-ffmpeg`) builds FFmpeg 9.0.2 from the pinned ffmpeg.org tarball, checked against its SHA-256, with only what lossless MPEG-2/ALAC MP4 extraction and MP4 playback need:
 
 ```
---disable-everything --disable-programs --disable-doc --disable-network --disable-autodetect
---disable-avformat --disable-avfilter --disable-swscale --disable-swresample --disable-avdevice
---enable-decoder=mpeg2video --enable-parser=mpegvideo --enable-pic --disable-shared --enable-static
+--disable-everything --disable-programs --enable-ffmpeg --disable-doc --disable-network --disable-autodetect
+--enable-avformat --enable-avfilter --enable-swscale --enable-swresample --disable-avdevice
+--enable-decoder=mpeg2video,h264,alac,aac,pcm_s16le --enable-parser=mpegvideo,h264,aac --enable-encoder=alac
+--enable-demuxer=mpegps,mpegvideo,mov,wav --enable-muxer=mp4 --enable-protocol=file
+--enable-filter=aresample,aformat,anull,abuffer,abuffersink --enable-pic --disable-shared --enable-static
 ```
 
-`--disable-x86asm` is added when `nasm` is absent. The build is LGPL: no `--enable-gpl`, `--enable-nonfree` or `--enable-version3`. It refuses to continue unless configure reports `License: LGPL version 2.1 or later`.
+The `mpegvideo` demuxer is never used to open a file. A PSS movie's video stream names no codec, and `mpegps` identifies it by probing its content with the demuxers it has, which only `mpegvideo` recognises. `--disable-x86asm` is added when `nasm` is absent. The build is LGPL: no `--enable-gpl`, `--enable-nonfree` or `--enable-version3`. It refuses to continue unless configure reports `License: LGPL version 2.1 or later`.
 
-`kz-ffmpeg --out DIR [--jobs N]` installs `DIR/include/{libavcodec,libavutil}`, `DIR/lib/libavcodec.a`, `DIR/lib/libavutil.a`, `DIR/configure.log` and the stamp `DIR/kz-ffmpeg.json`. `--check` tests the stamp; an up-to-date `DIR` is skipped.
+`kz-ffmpeg --out DIR [--jobs N]` installs the headers under `DIR/include`, the static `libavcodec`, `libavformat`, `libavfilter`, `libavutil`, `libswresample` and `libswscale` under `DIR/lib`, the command `DIR/bin/ffmpeg`, `DIR/configure.log` and the stamp `DIR/kz-ffmpeg.json`. `--check` tests the stamp; an up-to-date `DIR` is skipped.
 
 Per platform:
 
