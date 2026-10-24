@@ -646,15 +646,34 @@ impl SourceTree {
 
     /// Opens an already unpacked source tree for standalone converter callers.
     pub fn directory(root: &Path) -> CoreResult<Self> {
+        Self::directory_with_texture_exclusion(root, false)
+    }
+
+    /// Opens an unpacked DC1 source tree while excluding generated texture replacements.
+    pub fn directory_dc1(root: &Path) -> CoreResult<Self> {
+        Self::directory_with_texture_exclusion(root, true)
+    }
+
+    fn directory_with_texture_exclusion(root: &Path, exclude_textures: bool) -> CoreResult<Self> {
         fn gather(
             root: &Path,
             directory: &Path,
+            exclude_textures: bool,
             entries: &mut BTreeMap<String, Extent>,
         ) -> CoreResult<()> {
             for entry in fs::read_dir(directory)? {
                 let path = entry?.path();
+                if exclude_textures
+                    && directory == root
+                    && path
+                        .file_name()
+                        .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("textures"))
+                    && path.is_dir()
+                {
+                    continue;
+                }
                 if path.is_dir() {
-                    gather(root, &path, entries)?;
+                    gather(root, &path, exclude_textures, entries)?;
                 } else if path.is_file() {
                     let name = path
                         .strip_prefix(root)
@@ -674,7 +693,7 @@ impl SourceTree {
             Ok(())
         }
         let mut entries = BTreeMap::new();
-        gather(root, root, &mut entries)?;
+        gather(root, root, exclude_textures, &mut entries)?;
         let bytes = entries.values().map(|entry| entry.size).sum();
         let mut resources = BTreeMap::new();
         for (name, extent) in &entries {
@@ -1062,6 +1081,19 @@ pub fn sound_text(source: &Path) -> CoreResult<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dc1_directory_ignores_generated_texture_replacements() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("asset.bin"), b"source").unwrap();
+        fs::create_dir_all(temp.path().join("textures")).unwrap();
+        fs::write(temp.path().join("textures/stale.json"), b"generated").unwrap();
+
+        let dc1 = SourceTree::directory_dc1(temp.path()).unwrap();
+        assert_eq!(dc1.names().collect::<Vec<_>>(), ["asset.bin"]);
+        let default = SourceTree::directory(temp.path()).unwrap();
+        assert_eq!(default.names().collect::<Vec<_>>(), ["asset.bin", "textures/stale.json"]);
+    }
 
     fn index() -> Vec<u8> {
         let mut bytes = Vec::new();

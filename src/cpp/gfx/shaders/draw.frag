@@ -133,6 +133,10 @@ void main() {
         color  = vec4(t.rgb * v_color.rgb * kModulate, t.a * v_color.a * kModulate);
     }
 
+    if (kAlphaTest && !AlphaPasses(color.a)) {
+        discard;
+    }
+
     if ((pc.flags & kFog) != 0u) {
         float fog = v_fog_mode.z < -1.5 ? v_fog_mode.w : v_fog.x;
         if (v_fog_mode.z >= 0.0) {
@@ -149,10 +153,6 @@ void main() {
             fog /= 255.0;
         }
         color.rgb = mix(unpackUnorm4x8(pc.fog_color).rgb, color.rgb, fog);
-    }
-
-    if (kAlphaTest && !AlphaPasses(color.a)) {
-        discard;
     }
 
     // Keep the original coverage, alpha test and blending. Only presentation RGB is tinted.

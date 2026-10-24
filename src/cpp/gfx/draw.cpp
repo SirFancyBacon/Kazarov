@@ -351,9 +351,10 @@ bool Prepare(PipelineFamily family, VkPrimitiveTopology topology, const TextureB
     VkCommandBuffer cmd = DrawCommands();
 
     BlendMapping blend = MapBlend(state.alpha, state.blend);
+    bool         alpha_test = state.alpha_test && state.alpha_func != AlphaFunc::Always;
     uint32_t     pipeline = !g.dynamic_color_write_mask && state.color_write_mask == 0
-                                ? NoColorPipelineIndex(family, mode, state.alpha_test)
-                                : PipelineIndex(family, blend.slot, mode, state.alpha_test);
+                                ? NoColorPipelineIndex(family, mode, alpha_test)
+                                : PipelineIndex(family, blend.slot, mode, alpha_test);
     if (g.bound.pipeline != g.pipelines[pipeline]) {
         g.bound.pipeline = g.pipelines[pipeline];
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g.bound.pipeline);
