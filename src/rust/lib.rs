@@ -105,6 +105,7 @@ mod ffi {
 fn setup_data(title: &str, data_root: &str) -> Result<bool, core::CoreError> {
     #[cfg(not(feature = "desktop-ui"))]
     {
+        let _ = (title, data_root);
         return Ok(false);
     }
     #[cfg(feature = "desktop-ui")]

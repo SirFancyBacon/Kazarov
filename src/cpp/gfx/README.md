@@ -523,7 +523,7 @@ needs `shaderSampledImageArrayDynamicIndexing`, `descriptorBindingPartiallyBound
 `descriptorBindingSampledImageUpdateAfterBind`, `descriptorBindingUpdateUnusedWhilePending`, 8192
 update-after-bind sampled images per stage and per set, and that many update-after-bind resources
 per stage. GPUs with Metal argument buffers tier 1 (Apple A12 and older) have about a hundred, so
-there `draw_bound.frag` takes set 0 as one texture, palette and sampler that each draw pushes with
+there `draw_bound.frag` and `draw_bound_single.frag` take set 0 as one texture, palette and sampler that each draw pushes with
 `vkCmdPushDescriptorSetKHR`, skipped when the previous draw pushed the same. `MissingBindless` makes
 the choice; `RendererConfig::bindless_textures = false` or `KZ_BINDLESS=0` takes the pushed path
 on any device. A portability-subset device (MoltenVK) takes it too even where the array fits: there

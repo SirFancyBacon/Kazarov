@@ -321,27 +321,6 @@ void RunEntry() {
 
 } // namespace
 
-std::size_t KzThreadsSnapshot(KzThreadInfo *out, std::size_t max) {
-    Scheduler  &s = Sched();
-    std::size_t count = 0;
-    for (const auto &[id, thread] : s.threads) {
-        if (count < max) {
-            KzThreadInfo &info = out[count];
-            info = {id, thread->priority, static_cast<int>(thread->state), thread->waiting_on, 0, 0};
-#if defined(KZ_ARM64_FIBERS)
-            // A suspended thread resumes at the x30 kz_fiber_switch saved, with the x29 beside it.
-            if (thread.get() != s.running && thread->context.sp != nullptr) {
-                const auto *saved = static_cast<const std::uintptr_t *>(thread->context.sp);
-                info.fp = saved[0x50 / sizeof(std::uintptr_t)];
-                info.pc = saved[0x58 / sizeof(std::uintptr_t)];
-            }
-#endif
-        }
-        ++count;
-    }
-    return count;
-}
-
 #if defined(KZ_ARM64_FIBERS)
 extern "C" void kz_fiber_entry() {
     RunEntry();
