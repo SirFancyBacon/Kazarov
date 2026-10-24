@@ -188,10 +188,21 @@ else is internal. No game header is reachable from here: `platform/`, `gfx/` and
 ## Blending
 
 GS `((A - B) * C >> 7) + D`, A/B/D in {Cs, Cd, 0}, C in {As, Ad, FIX}. The fragment shader writes
-the source colour and, on the second dual-source output, C when it can compute it (As or
-FIX / 0x80). Vulkan then computes `src * Fs (op) dst * Fd`. `F` below is `SRC1_ALPHA` for As and
-FIX, `DST_ALPHA` for Ad; `1-F` its complement. All 81 combinations reduce to 28 Vulkan blend
-states.
+the source colour and the factor C where it can compute it (As or FIX / 0x80). Vulkan then
+computes `src * Fs (op) dst * Fd`. `F` below is `DST_ALPHA` for Ad; `1-F` its complement. For As
+and FIX it is the shader's factor, reaching the blend one of three ways, all clamped to 1.0 and so
+the same value:
+
+- As on a target with alpha: `SRC_ALPHA`. The first output's alpha is As itself, so no second
+  output is needed.
+- FIX: `CONSTANT_ALPHA`, with `min(FIX / 128, 1)` set through the dynamic blend constants (deduped
+  per command buffer; FIX / 128 is exact in float).
+- As on a target without alpha: `SRC1_ALPHA`, the dual-source output, because the first output's
+  alpha is forced to 1 there.
+
+Pipelines whose blend reads the second source use `draw.frag` and write it; the rest use
+`draw_single.frag` (the same `draw_body.glsl` without that output). The blend table is built per
+target kind, and equations that coincide share a state.
 
 | A | B | D | GS result | Fs, Fd, op | shader writes | exact |
 |---|---|---|---|---|---|---|
@@ -247,9 +258,14 @@ stencil; it is here for techniques the GS did with destination alpha (DATE) or c
 All stencil state is core dynamic state (Vulkan 1.3's `STENCIL_TEST_ENABLE` and `STENCIL_OP`, 1.0's
 masks and reference), so it adds no pipelines. The colour write mask is dynamic through
 `VK_EXT_extended_dynamic_state3` (`extendedDynamicState3ColorWriteMask`) where the device has it;
-otherwise a colourless pipeline per family, texture mode and alpha test (18) is precompiled, and a
-partial mask writes every channel. `RendererConfig::dynamic_color_write_mask = false` forces that
-path.
+otherwise a partial mask writes every channel. `RendererConfig::dynamic_color_write_mask = false`
+forces that path.
+
+A draw that writes no colour and does not alpha test (stencil shadow volumes, depth-only passes)
+binds a pipeline with no fragment stage and a fixed empty write mask, one per family, whichever
+way the mask is supported; it also takes the dynamic mask out of the tracked state. With an alpha
+test the shader still runs: the dynamic mask is set to 0, or without it a colourless alpha-test
+pipeline per family and texture mode is precompiled.
 
 ## Ordering
 
@@ -261,13 +277,16 @@ to is refused: snapshot it first (`SnapshotFrame`, `CopyTexture` from `kMainTarg
 
 ## Pipelines
 
-3 families (2D triangles, 2D lines, meshes) x 28 blend states x 3 texture modes (none, RGBA,
-index + palette) x alpha test on/off = 504 pipelines (522 without a dynamic colour write mask,
-above), all created in `RendererInit` on up to eight threads against the pipeline cache. With
-`RendererConfig::prog0_meshes` two more mesh families (Vu_prog0 and Vu_prog0 skinned, one vertex
-specialisation constant apart) give 5 x 28 x 3 x 2 = 840 pipelines (870 without a dynamic colour
-write mask); without it the families stop after the plain mesh family, so a renderer that does not
-ask builds exactly the 504 (522) it always did, at the same indices. Depth
+3 families (2D triangles, 2D lines, meshes) x 52 blend states x 3 texture modes (none, RGBA,
+index + palette) x alpha test on/off = 936 pipelines, plus one depth-only pipeline per family
+(939), or 948 without a dynamic colour write mask, which adds an alpha-testing colourless one per
+family and texture mode. The 52 blend states are the Vulkan equations the table above yields for
+a target with alpha (source-alpha, constant-alpha and destination-alpha forms) and for one without
+(dual-source forms, plus the ones shared with FIX). All are created in `RendererInit` on up to
+eight threads against the pipeline cache. With `RendererConfig::prog0_meshes` two more mesh
+families (Vu_prog0 and Vu_prog0 skinned, one vertex specialisation constant apart) give
+5 x 52 x 3 x 2 + 5 = 1565 pipelines (1580 without a dynamic colour write mask); without it the
+families stop after the plain mesh family. Depth
 test, depth write, compare op, the whole stencil state, cull mode, front face, viewport, scissor
 and topology within a class are dynamic state, so they add none. The cache file is checked against the device before use and written through a temporary
 file and a rename.

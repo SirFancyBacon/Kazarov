@@ -202,6 +202,7 @@ struct BoundState {
     int      stencil_compare_mask[2] = {-1, -1};
     int      stencil_write_mask[2] = {-1, -1};
     int      color_write_mask = -1;
+    float    blend_constant_alpha = -1.0f; // unset until a draw needs a constant factor
     VkRect2D scissor = {
         {-1, -1},
         {0,  0 }
@@ -236,6 +237,7 @@ struct BlendMapping {
     uint16_t slot;      // index into the precompiled blend states
     uint8_t  transform; // what the shader writes as source colour, kSourceTransform*
     bool     fix;       // C is FIX: the shader writes FIX / 128 as the factor
+    bool     constant;  // the blend reads FIX as the blend constant's alpha
 };
 
 enum SourceTransform : uint8_t {
@@ -353,7 +355,7 @@ struct Context {
     VkPipelineCache              pipeline_cache = VK_NULL_HANDLE;
     std::vector<VkPipeline>      pipelines;
     uint32_t                     blend_slot_count = 0;
-    std::array<BlendMapping, 81> blend_map = {};
+    std::array<BlendMapping, 162> blend_map = {};
     double                       pipeline_seconds = 0.0;
 
     std::vector<Texture>                              textures;
@@ -497,9 +499,11 @@ void     CreatePipelineLayout();
 void     CreatePipelines();
 void     DestroyPipelines();
 uint32_t PipelineIndex(PipelineFamily family, uint32_t blend_slot, TextureMode mode, bool alpha_test);
-// Without a dynamic colour write mask: the pipelines that write no colour, after the others.
-uint32_t     NoColorPipelineIndex(PipelineFamily family, TextureMode mode, bool alpha_test);
-BlendMapping MapBlend(const GsBlend &blend, bool enable);
+// Without a dynamic colour write mask: the alpha-testing pipelines that write no colour, after the others.
+uint32_t NoColorPipelineIndex(PipelineFamily family, TextureMode mode);
+// The depth and stencil only pipelines, which have no fragment stage, last.
+uint32_t     DepthOnlyPipelineIndex(PipelineFamily family);
+BlendMapping MapBlend(const GsBlend &blend, bool enable, bool target_has_alpha);
 // kFamilyMesh for a plain draw (nullptr), else a prog0 family when the renderer has them.
 PipelineFamily MeshFamily(const Prog0Constants *prog0);
 // Sets 0 and 1 are the same in both layouts, so the sets bound for one carry to the other.

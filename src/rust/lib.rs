@@ -21,6 +21,11 @@ mod ffi {
         LuauOnly,
     }
 
+    struct TextureConvertReport {
+        sources: u64,
+        pngs: u64,
+    }
+
     extern "Rust" {
         fn bridge_smoke(value: &str) -> Result<String>;
         fn extract(source: &str, data_out: &str, jobs: usize) -> Result<ExtractReport>;
@@ -30,6 +35,10 @@ mod ffi {
             jobs: usize,
             policy: ScriptPublicationPolicy,
         ) -> Result<ExtractReport>;
+        fn textures_convert(raw: &str, output: &str, jobs: usize) -> Result<TextureConvertReport>;
+        fn textures_convert_dc1(raw: &str, output: &str, jobs: usize) -> Result<TextureConvertReport>;
+        fn textures_document_map_dc1(raw: &str, output: &str, jobs: usize) -> Result<String>;
+        fn textures_verify(textures: &str) -> Result<()>;
         fn list(source: &str) -> Result<String>;
         fn sound(source: &str) -> Result<String>;
         fn refresh_configs(source: &str, config_dir: &str) -> Result<usize>;
@@ -132,6 +141,18 @@ fn extract_with_script_policy(
     })
 }
 
+fn textures_convert(
+    raw: &str,
+    output: &str,
+    jobs: usize,
+) -> Result<ffi::TextureConvertReport, core::CoreError> {
+    let report = core::textures::convert_tree(raw.as_ref(), output.as_ref(), jobs)?;
+    Ok(ffi::TextureConvertReport {
+        sources: report.sources,
+        pngs: report.pngs,
+    })
+}
+
 #[cfg(test)]
 fn script_publication_policy_from_repr(
     value: u8,
@@ -176,6 +197,30 @@ mod script_publication_policy_tests {
         assert!(script_publication_policy_from_repr(2).is_err());
         assert!(script_publication_policy_from_repr(u8::MAX).is_err());
     }
+}
+
+fn textures_convert_dc1(
+    raw: &str,
+    output: &str,
+    jobs: usize,
+) -> Result<ffi::TextureConvertReport, core::CoreError> {
+    let report = core::textures::convert_tree_dc1(raw.as_ref(), output.as_ref(), jobs)?;
+    Ok(ffi::TextureConvertReport {
+        sources: report.sources,
+        pngs: report.pngs,
+    })
+}
+
+fn textures_document_map_dc1(
+    raw: &str,
+    output: &str,
+    jobs: usize,
+) -> Result<String, core::CoreError> {
+    core::textures::document_map_tree_dc1(raw.as_ref(), output.as_ref(), jobs)
+}
+
+fn textures_verify(textures: &str) -> Result<(), core::CoreError> {
+    core::textures::verify_tree(textures.as_ref())
 }
 
 fn list(source: &str) -> Result<String, core::CoreError> {
