@@ -350,14 +350,29 @@ bool Prepare(PipelineFamily family, VkPrimitiveTopology topology, const TextureB
     EnsureRendering(target);
     VkCommandBuffer cmd = DrawCommands();
 
-    BlendMapping blend = MapBlend(state.alpha, state.blend);
+    BlendMapping blend = MapBlend(state.alpha, state.blend, target.has_alpha);
     bool         alpha_test = state.alpha_test && state.alpha_func != AlphaFunc::Always;
-    uint32_t     pipeline = !g.dynamic_color_write_mask && state.color_write_mask == 0
-                                ? NoColorPipelineIndex(family, mode, alpha_test)
-                                : PipelineIndex(family, blend.slot, mode, alpha_test);
+    bool         writes_color = (state.color_write_mask & kWriteRgba) != 0;
+    uint32_t     pipeline = writes_color ? PipelineIndex(family, blend.slot, mode, alpha_test)
+                            : !alpha_test ? DepthOnlyPipelineIndex(family)
+                            : g.dynamic_color_write_mask ? PipelineIndex(family, blend.slot, mode, true)
+                                                         : NoColorPipelineIndex(family, mode);
     if (g.bound.pipeline != g.pipelines[pipeline]) {
         g.bound.pipeline = g.pipelines[pipeline];
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g.bound.pipeline);
+        // A pipeline with a fixed mask overwrites the dynamic one.
+        if (!writes_color && !alpha_test) {
+            g.bound.color_write_mask = -1;
+        }
+    }
+    // Draws that read FIX as a constant need it set; every pipeline lists it as dynamic, so it is
+    // set once before the first draw whatever that draw blends.
+    float constant_alpha = blend.constant ? std::min(static_cast<float>(state.alpha.fix) / 128.0f, 1.0f)
+                                          : std::max(g.bound.blend_constant_alpha, 0.0f);
+    if (g.bound.blend_constant_alpha != constant_alpha) {
+        g.bound.blend_constant_alpha = constant_alpha;
+        const float constants[4] = {0.0f, 0.0f, 0.0f, constant_alpha};
+        vkCmdSetBlendConstants(cmd, constants);
     }
 
     const LogicalMapping mapping = ui && g.target == kMainTarget ? UiMapping(target.mapping) : target.mapping;
@@ -450,7 +465,8 @@ bool Prepare(PipelineFamily family, VkPrimitiveTopology topology, const TextureB
         SetStencilFace(cmd, 0, state.stencil_front, masks);
         SetStencilFace(cmd, 1, state.stencil_back, masks);
     }
-    if (g.dynamic_color_write_mask && g.bound.color_write_mask != state.color_write_mask) {
+    if (g.dynamic_color_write_mask && (writes_color || alpha_test) &&
+        g.bound.color_write_mask != state.color_write_mask) {
         g.bound.color_write_mask = state.color_write_mask;
         VkColorComponentFlags mask = state.color_write_mask & kWriteRgba;
         g.cmd_set_color_write_mask(cmd, 0, 1, &mask);
