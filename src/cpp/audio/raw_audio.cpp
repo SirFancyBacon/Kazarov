@@ -31,8 +31,10 @@ bool IsChunk(std::span<const std::uint8_t> data, std::size_t offset,
          IsTag(ReadU32(data, offset + 4), type);
 }
 
-int DataBytes(std::uint8_t status) {
+int DataBytes(std::uint8_t status, bool short_note_off) {
   switch (status & 0xF0) {
+  case 0x80:
+    return short_note_off ? 1 : 2;
   case 0xC0:
   case 0xD0:
     return 1;
@@ -88,7 +90,8 @@ void ForEachEntry(std::span<const std::uint8_t> chunk, F parse) {
 
 class RawSqReader {
 public:
-  explicit RawSqReader(std::span<const std::uint8_t> data) : data_(data) {}
+  RawSqReader(std::span<const std::uint8_t> data, bool short_note_off)
+      : data_(data), short_note_off_(short_note_off) {}
 
   SqEvent Next() {
     SqEvent event;
@@ -159,7 +162,7 @@ public:
       }
 
       running_ = status;
-      const int length = DataBytes(status);
+      const int length = DataBytes(status, short_note_off_);
       if (position_ + static_cast<std::size_t>(length) > data_.size()) {
         return {};
       }
@@ -191,6 +194,7 @@ private:
 
   std::span<const std::uint8_t> data_;
   std::size_t position_ = 0;
+  bool short_note_off_;
   std::uint8_t running_ = 0;
   bool no_delta_ = false;
 };
@@ -328,8 +332,9 @@ std::shared_ptr<Bank> Bank::Create(std::span<const std::uint8_t> hd,
   return bank;
 }
 
-std::shared_ptr<SqFile> SqFile::Create(std::span<const std::uint8_t> sq) {
-  const std::uint32_t midi = FindChunk(sq, 0x4D696469);
+std::shared_ptr<SqFile> SqFile::Create(std::span<const std::uint8_t> sq,
+                                       const SqRawOptions &options) {
+  const std::uint32_t midi = FindChunk(sq, kChunkMidi);
   if (midi == kUnused) {
     return nullptr;
   }
@@ -382,7 +387,8 @@ std::shared_ptr<SqFile> SqFile::Create(std::span<const std::uint8_t> sq) {
     song.begin = file->events_.size();
     song.division = division > 0 && division < 0x8000 ? division : 480;
     RawSqReader reader(
-        sq.subspan(block + data_offset, end - block - data_offset));
+        sq.subspan(block + data_offset, end - block - data_offset),
+        options.short_note_off);
     while (true) {
       SqEvent event = reader.Next();
       if (!event.payload.empty()) {

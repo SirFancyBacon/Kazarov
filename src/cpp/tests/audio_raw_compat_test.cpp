@@ -106,7 +106,8 @@ std::vector<std::uint8_t> RawBankHd() {
   return result;
 }
 
-std::vector<std::uint8_t> RawSq(int note, int velocity, int ticks) {
+std::vector<std::uint8_t> RawSq(int note, int velocity, int ticks,
+                                bool short_note_off = false) {
   std::vector<std::uint8_t> events{0x00,
                                    0xC0,
                                    0x00,
@@ -115,8 +116,12 @@ std::vector<std::uint8_t> RawSq(int note, int velocity, int ticks) {
                                    static_cast<std::uint8_t>(note),
                                    static_cast<std::uint8_t>(velocity)};
   AppendVarLen(events, static_cast<std::uint32_t>(ticks));
-  events.insert(events.end(), {0x80, static_cast<std::uint8_t>(note), 0x00,
-                               0x00, 0xFF, 0x2F, 0x00});
+  events.push_back(0x80);
+  events.push_back(static_cast<std::uint8_t>(note));
+  if (!short_note_off) {
+    events.push_back(0x00);
+  }
+  events.insert(events.end(), {0x00, 0xFF, 0x2F, 0x00});
 
   constexpr std::size_t block = 0x14;
   constexpr std::size_t events_at = block + 6;
@@ -182,6 +187,17 @@ TEST(AudioRawCompatibility,
   ASSERT_EQ(raw_layers[0].vag->pcm, json_layers[0].vag->pcm);
   EXPECT_EQ(raw_layers[0].vag->loop_start, json_layers[0].vag->loop_start);
   EXPECT_EQ(raw_layers[0].vag->loops, json_layers[0].vag->loops);
+}
+
+TEST(AudioRawCompatibility, ShortNoteOffDialectReadsNoteOnlyNoteOffs) {
+  const auto raw = audio::SqFile::Create(RawSq(60, 100, 480, true),
+                                         {.short_note_off = true});
+  ASSERT_NE(raw, nullptr);
+  const auto events = raw->Events(raw->Songs()[0]);
+  ASSERT_EQ(events.size(), 4);
+  EXPECT_EQ(events[2].status, 0x80);
+  EXPECT_EQ(events[2].data[0], 60);
+  EXPECT_EQ(events[3].kind, audio::SqEventKind::End);
 }
 
 TEST(AudioRawCompatibility, RawSequenceMatchesNormalizedEventsAndPayloads) {

@@ -17,9 +17,22 @@ struct SqSong {
   int division = 480;
 };
 
+/**
+ * Selects the raw SQ dialect a game's sequence data uses.
+ */
+struct SqRawOptions {
+  // A note-off carries only its note number instead of note and velocity.
+  bool short_note_off = false;
+};
+
 class SqFile {
 public:
-  static std::shared_ptr<SqFile> Create(std::span<const std::uint8_t> sq);
+  /**
+   * Converts a retail SQ sequence into owned events for the shared sequence
+   * player.
+   */
+  static std::shared_ptr<SqFile> Create(std::span<const std::uint8_t> sq,
+                                        const SqRawOptions &options = {});
   /**
    * Loads and owns normalized musical events from the published JSON schema.
    */

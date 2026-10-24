@@ -20,6 +20,7 @@ constexpr std::uint32_t kChunkProg = 0x50726F67;
 constexpr std::uint32_t kChunkSset = 0x53736574;
 constexpr std::uint32_t kChunkSmpl = 0x536D706C;
 constexpr std::uint32_t kChunkVagi = 0x56616769;
+constexpr std::uint32_t kChunkMidi = 0x4D696469;
 constexpr std::uint32_t kUnused = 0xFFFFFFFF;
 
 namespace hd {
