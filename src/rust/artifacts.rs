@@ -53,6 +53,16 @@ pub struct Job {
     pub run: JobRunner,
 }
 
+impl super::jobs::ClassJob for Job {
+    fn class(&self) -> usize {
+        self.category as usize
+    }
+
+    fn work(&self) -> u64 {
+        self.work
+    }
+}
+
 impl Job {
     pub fn execute(self, sink: &AssetSink) -> CoreResult<()> {
         let _admission = sink

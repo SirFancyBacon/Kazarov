@@ -45,7 +45,8 @@ endif()
 if(KZ_FFMPEG_DIR)
     corrosion_set_env_vars(kazarov_core "KAZAROV_FFMPEG_INCLUDE=${KZ_FFMPEG_DIR}/include" "KAZAROV_FFMPEG_LIB=${KZ_FFMPEG_DIR}/lib")
 endif()
-corrosion_add_cxxbridge(kazarov_bridge CRATE kazarov_core FILES rust/lib.rs)
+corrosion_add_cxxbridge(kazarov_bridge CRATE kazarov_core FILES rust/lib.rs rust/host_jobs.rs)
+target_include_directories(kazarov_bridge PUBLIC "${CMAKE_CURRENT_LIST_DIR}/../include")
 
 # Corrosion imports Rust's standard native libraries, but not the GUI crates'
 # additional OS dependencies when their static archive is linked from C++.

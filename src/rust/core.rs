@@ -10,6 +10,8 @@ pub mod actions;
 pub mod archive;
 #[path = "artifacts.rs"]
 pub mod artifacts;
+#[path = "classic_zip.rs"]
+pub mod classic_zip;
 #[path = "audio.rs"]
 pub mod audio;
 #[path = "configs.rs"]
@@ -18,6 +20,8 @@ pub mod configs;
 pub mod configs_native;
 #[path = "inventory.rs"]
 pub mod inventory;
+#[path = "jobs.rs"]
+pub mod jobs;
 #[path = "models.rs"]
 pub mod models;
 #[path = "native_scripts.rs"]
@@ -413,28 +417,6 @@ fn category_stage(category: artifacts::Category) -> Stage {
     }
 }
 
-fn interleave_jobs(jobs: Vec<artifacts::Job>) -> Vec<artifacts::Job> {
-    let mut categories: [Vec<artifacts::Job>; 8] = std::array::from_fn(|_| Vec::new());
-    for job in jobs {
-        categories[job.category as usize].push(job);
-    }
-    for category in &mut categories {
-        category.sort_by_key(|job| job.work);
-    }
-    let mut ordered = Vec::with_capacity(categories.iter().map(Vec::len).sum());
-    loop {
-        let before = ordered.len();
-        for category in &mut categories {
-            if let Some(job) = category.pop() {
-                ordered.push(job);
-            }
-        }
-        if before == ordered.len() {
-            return ordered;
-        }
-    }
-}
-
 fn execute_jobs(
     jobs: Vec<artifacts::Job>,
     pool: &rayon::ThreadPool,
@@ -442,26 +424,20 @@ fn execute_jobs(
     phases: &[Option<Phase>; 8],
     remaining: &[std::sync::atomic::AtomicU64; 8],
 ) -> CoreResult<()> {
-    use rayon::prelude::*;
     use std::sync::atomic::Ordering;
-    pool.install(|| {
-        interleave_jobs(jobs)
-            .into_par_iter()
-            .with_max_len(1)
-            .try_for_each(|job| {
-                let category = job.category as usize;
-                let work = job.work;
-                let phase = phases[category]
-                    .as_ref()
-                    .ok_or_else(|| CoreError("unplanned asset category".into()))?;
-                phase.item(&job.label);
-                job.execute(sink)?;
-                phase.inc(work);
-                if remaining[category].fetch_sub(work, Ordering::AcqRel) == work {
-                    phase.done();
-                }
-                Ok(())
-            })
+    jobs::run_interleaved(pool, jobs, phases.len(), |job| {
+        let category = job.category as usize;
+        let work = job.work;
+        let phase = phases[category]
+            .as_ref()
+            .ok_or_else(|| CoreError("unplanned asset category".into()))?;
+        phase.item(&job.label);
+        job.execute(sink)?;
+        phase.inc(work);
+        if remaining[category].fetch_sub(work, Ordering::AcqRel) == work {
+            phase.done();
+        }
+        Ok(())
     })
 }
 
@@ -533,12 +509,7 @@ fn extract_stages(
     }
     let gameplay_documents = configs::gameplay_documents(Some(root))?;
     configs::initialize_character_plans(&gameplay_documents)?;
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(jobs)
-        .stack_size(WORKER_STACK)
-        .thread_name(|index| format!("dc2data-worker-{index}"))
-        .build()
-        .map_err(|error| CoreError(format!("cannot start conversion workers: {error}")))?;
+    let pool = jobs::worker_pool(jobs, "dc2data", WORKER_STACK)?;
     let phase = reporter.phase(Stage::Fingerprint);
     let initial_state = source_state(&source)?;
     // The owned source image is shared by hashing, indexing, every converter and final validation.

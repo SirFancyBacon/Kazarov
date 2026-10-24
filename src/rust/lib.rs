@@ -1,4 +1,6 @@
 pub mod core;
+#[cfg(not(test))]
+mod host_jobs;
 #[cfg(feature = "desktop-ui")]
 mod setup;
 
@@ -11,6 +13,11 @@ mod ffi {
         bytes: u64,
         texture_sources: u64,
         pngs: u64,
+    }
+
+    struct PackReport {
+        files: u64,
+        bytes: u64,
     }
 
     struct CheckReport {
@@ -96,6 +103,8 @@ mod ffi {
         fn archive_path(archive: &Archive) -> String;
         /// Writes a deterministic archive of every file below `source`.
         fn pack_directory(source: &str, output: &str) -> Result<()>;
+        /// Packs a directory as a classic ZIP of stored entries, checksumming on `workers` threads.
+        fn pack_directory_stored(source: &str, output: &str, workers: usize) -> Result<PackReport>;
         /// Decodes a PNG of exactly `width` by `height` pixels into `out` as 8-bit RGBA (`width * height * 4`
         /// bytes). Safe to call from any thread.
         fn png_decode_rgba(png: &[u8], width: u32, height: u32, out: &mut [u8]) -> Result<()>;
@@ -704,6 +713,19 @@ fn archive_read_entry(
 
 fn archive_path(archive: &Archive) -> String {
     archive.path().to_string_lossy().into_owned()
+}
+
+fn pack_directory_stored(
+    source: &str,
+    output: &str,
+    workers: usize,
+) -> Result<ffi::PackReport, core::CoreError> {
+    let report =
+        core::classic_zip::pack_directory_stored(source.as_ref(), output.as_ref(), workers)?;
+    Ok(ffi::PackReport {
+        files: report.files,
+        bytes: report.bytes,
+    })
 }
 
 fn pack_directory(source: &str, output: &str) -> Result<(), core::CoreError> {
