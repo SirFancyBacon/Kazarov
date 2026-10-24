@@ -102,7 +102,6 @@ public:
     void Render(float *out, int frames);
 
 private:
-
     struct Channel {
         int  program = 0;
         int  volume = 100;
