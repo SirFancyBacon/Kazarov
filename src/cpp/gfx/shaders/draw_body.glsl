@@ -6,8 +6,17 @@
 layout(constant_id = 0) const int kTextureMode = 0; // 0 none, 1 RGBA, 2 index + palette
 layout(constant_id = 1) const bool kAlphaTest  = false;
 
+#ifdef KZ_BOUND_TEXTURES
+// Each draw pushes its own texture, palette and sampler: GPUs without 8192 update-after-bind
+// textures (Metal argument buffers tier 1, Apple A12 and older) cannot hold the bindless array.
+layout(set = 0, binding = 0) uniform texture2D u_texture;
+layout(set = 0, binding = 1) uniform texture2D u_palette;
+layout(set = 0, binding = 2) uniform sampler u_sampler;
+layout(set = 0, binding = 3) uniform sampler u_palette_sampler;
+#else
 layout(set = 0, binding = 0) uniform texture2D u_textures[8192];
 layout(set = 0, binding = 1) uniform sampler u_samplers[24];
+#endif
 
 layout(push_constant, std430) uniform Push {
     vec4 xform;
@@ -47,8 +56,13 @@ const uint kLinear         = 128u;
 
 const float kModulate = 255.0 / 128.0;
 
+#ifdef KZ_BOUND_TEXTURES
+#define TEXTURE sampler2D(u_texture, u_sampler)
+#define PALETTE sampler2D(u_palette, u_palette_sampler)
+#else
 #define TEXTURE sampler2D(u_textures[pc.texture_slot], u_samplers[pc.sampler_slot])
 #define PALETTE sampler2D(u_textures[pc.palette_slot], u_samplers[0])
+#endif
 
 // textureGather returns texels (0,1), (1,1), (1,0), (0,0) of the 2x2 footprint.
 float Bilerp(vec4 gathered, vec2 f) {
