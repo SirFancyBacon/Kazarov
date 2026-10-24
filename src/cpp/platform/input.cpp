@@ -183,8 +183,12 @@ struct PadSlot {
 
 // Which device the player touched last (InputActiveGlyphFamily): false until a key or the mouse is
 // used, and the make of the first gamepad once one is open.
-bool             g_last_keyboard = false;
+bool g_last_keyboard = false;
+#ifdef __SWITCH__
+InputGlyphFamily g_pad_family = InputGlyphFamily::Switch;
+#else
 InputGlyphFamily g_pad_family = InputGlyphFamily::Ps4;
+#endif
 // The first gamepad's type, whose layout the controller's defaults follow (PS4 until one is open).
 SDL_GamepadType g_pad_type = SDL_GAMEPAD_TYPE_PS4;
 
@@ -999,7 +1003,12 @@ void InputShutdown() {
     }
 }
 
-InputGlyphFamily InputGlyphFamilyForGamepad(int sdl_gamepad_type, unsigned vendor, unsigned product) {
+InputGlyphFamily InputGlyphFamilyForGamepad([[maybe_unused]] int sdl_gamepad_type, [[maybe_unused]] unsigned vendor,
+                                            [[maybe_unused]] unsigned product) {
+#ifdef __SWITCH__
+    // Every pad on a Switch is a Nintendo one, and SDL's Horizon joysticks report no type.
+    return InputGlyphFamily::Switch;
+#else
     constexpr unsigned kValve = 0x28DE;
     constexpr unsigned kSteamDeck = 0x1205;
     switch (sdl_gamepad_type) {
@@ -1024,6 +1033,7 @@ InputGlyphFamily InputGlyphFamilyForGamepad(int sdl_gamepad_type, unsigned vendo
         return product == kSteamDeck ? InputGlyphFamily::SteamDeck : InputGlyphFamily::SteamController;
     }
     return InputGlyphFamily::Xbox;
+#endif
 }
 
 static InputGlyphFamily GamepadFamily(SDL_Gamepad *gamepad) {
