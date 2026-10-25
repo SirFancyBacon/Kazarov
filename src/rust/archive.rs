@@ -565,6 +565,10 @@ impl SourceBytes {
         }
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// The bytes in range, which must lie inside the source.
     pub fn slice(&self, range: Range<usize>) -> CoreResult<SourceSlice<'_>> {
         if range.start > range.end || range.end > self.len() {

@@ -1240,17 +1240,18 @@ impl Unit {
             || original.starts_with(b"IM3\0")
         {
             let parsed = parse_img(original);
-            if self.dc1_profile && original.starts_with(b"IMG\0") && parsed.is_err() {
-                if let Some((name, pictures)) = parse_dc1_fixed_texture_wrapper(original)? {
-                    let source_idx = self.sources.len();
-                    let metadata = json!({"block":0,"swizzled":false,"clamp":0,"no_image":false});
-                    let entries = self.convert_pictures(
-                        write, key, &name, pictures, &metadata, 0, source_idx, 0,
-                    )?;
-                    self.sources
-                        .push(json!({"source":key,"kind":"img","entries":entries}));
-                    return Ok(None);
-                }
+            if self.dc1_profile
+                && original.starts_with(b"IMG\0")
+                && parsed.is_err()
+                && let Some((name, pictures)) = parse_dc1_fixed_texture_wrapper(original)?
+            {
+                let source_idx = self.sources.len();
+                let metadata = json!({"block":0,"swizzled":false,"clamp":0,"no_image":false});
+                let entries = self
+                    .convert_pictures(write, key, &name, pictures, &metadata, 0, source_idx, 0)?;
+                self.sources
+                    .push(json!({"source":key,"kind":"img","entries":entries}));
+                return Ok(None);
             }
             let (kind, mut entries) = parsed?;
             if kind == "img3" {
