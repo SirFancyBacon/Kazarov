@@ -54,7 +54,11 @@ mod ffi {
             policy: ScriptPublicationPolicy,
         ) -> Result<ExtractReport>;
         fn textures_convert(raw: &str, output: &str, jobs: usize) -> Result<TextureConvertReport>;
-        fn textures_convert_dc1(raw: &str, output: &str, jobs: usize) -> Result<TextureConvertReport>;
+        fn textures_convert_dc1(
+            raw: &str,
+            output: &str,
+            jobs: usize,
+        ) -> Result<TextureConvertReport>;
         fn textures_document_map_dc1(raw: &str, output: &str, jobs: usize) -> Result<String>;
         fn textures_verify(textures: &str) -> Result<()>;
         fn list(source: &str) -> Result<String>;
@@ -155,9 +159,14 @@ fn extract_tracked(
     jobs: usize,
 ) -> Result<ffi::ExtractReport, core::CoreError> {
     *EXTRACT_STATUS.lock().unwrap() = (0.0, "");
-    let report = core::extract_with_progress(source.as_ref(), data_out.as_ref(), jobs, &|fraction, stage| {
-        *EXTRACT_STATUS.lock().unwrap() = (fraction, stage);
-    })?;
+    let report = core::extract_with_progress(
+        source.as_ref(),
+        data_out.as_ref(),
+        jobs,
+        &|fraction, stage| {
+            *EXTRACT_STATUS.lock().unwrap() = (fraction, stage);
+        },
+    )?;
     Ok(ffi::ExtractReport {
         files: report.files,
         bytes: report.bytes,
