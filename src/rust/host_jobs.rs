@@ -80,6 +80,8 @@ pub fn job_set_add(
 }
 
 /// Runs every job on `workers` threads, interleaving classes; the first failure stops the rest.
+// The host hands the set over through the bridge as the Box it owns, so the Box is the signature.
+#[allow(clippy::boxed_local)]
 pub fn job_set_run(set: Box<JobSet>, workers: usize) -> CoreResult<()> {
     if !(1..=1024).contains(&workers) {
         return Err(CoreError("workers must be between 1 and 1024".into()));
