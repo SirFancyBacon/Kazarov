@@ -3178,7 +3178,9 @@ fn decode_u64(bytes: &[u8], at: &mut usize) -> u64 {
 
 fn decode_text(bytes: &[u8], at: &mut usize) -> String {
     let length = decode_u64(bytes, at) as usize;
-    let text = std::str::from_utf8(&bytes[*at..*at + length]).unwrap().to_owned();
+    let text = std::str::from_utf8(&bytes[*at..*at + length])
+        .unwrap()
+        .to_owned();
     *at += length;
     text
 }

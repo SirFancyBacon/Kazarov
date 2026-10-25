@@ -496,7 +496,10 @@ enum SourceData {
     /// iOS gives an app about 7 GB of address space: a 4.7 GB disc image, read or mapped whole, leaves the
     /// converters too little, and an allocation fails. There each resource maps its own range of the image only
     /// while it is read.
-    Mapped { file: File, length: usize },
+    Mapped {
+        file: File,
+        length: usize,
+    },
 }
 
 /// A source's bytes, borrowed from memory or mapped from the disc image for as long as this lives.
@@ -1195,7 +1198,10 @@ mod tests {
         let dc1 = SourceTree::directory_dc1(temp.path()).unwrap();
         assert_eq!(dc1.names().collect::<Vec<_>>(), ["asset.bin"]);
         let default = SourceTree::directory(temp.path()).unwrap();
-        assert_eq!(default.names().collect::<Vec<_>>(), ["asset.bin", "textures/stale.json"]);
+        assert_eq!(
+            default.names().collect::<Vec<_>>(),
+            ["asset.bin", "textures/stale.json"]
+        );
     }
 
     fn index() -> Vec<u8> {
