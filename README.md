@@ -363,9 +363,26 @@ interval becomes one glTF animation named in English from
 motion that only drives other bundles' models is published into the models the
 game's scripts and code load it onto, never as an animation-only glTF; the scan of
 compiled scripts is in `src/rust/native_scripts.rs`. Each glTF keeps its binary data
-in one `<file>.gltf.bin` beside it. Only ChronicleTwo uses these
-modules; Chronicle's pinned revision does not contain the Rust publisher. Changes
-to the published format bump `data_version.json`.
+in one `<file>.gltf.bin` beside it. Changes to the published format bump
+`data_version.json`.
+
+A game describes its own data with a `GameProfile`; the default is Dark Cloud 2's.
+Chronicle converts Dark Cloud through `models_convert_dc1`
+(`src/rust/host_models.rs`), whose profile:
+
+- reads `.cfg` and `.clo` files with the game's own reader, handed over as a
+  `ProfileReader` (`include/kazarov/profile_reader.hpp`), so Kazarov needn't know
+  Dark Cloud's syntax;
+- keeps each action's source frames, which Dark Cloud's code compares with motion
+  times;
+- reads strips with a fixed corner layout (position, normal, texture coordinate, and a
+  colour when the mesh has colours);
+- keeps in the sidecars what rebuilding every source file byte for byte needs, and
+  indexes each source in `data/models.json` with its size and CRC-32, for a game that
+  rebuilds the retail records from the glTF as it reads its files.
+
+`models_strip_dc1` then empties the converted sources in the data in place, leaving
+`models.stripped` beside `models.json`.
 
 ## License
 
