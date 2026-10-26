@@ -65,6 +65,16 @@ pub(crate) struct ProfileActions {
     pub order: Vec<(String, KeyAction)>,
 }
 
+/// The original name of a KEY from its name argument: a typed string, or null for a KEY a game
+/// leaves unnamed (`{"type":"none"}`), which takes its motion's fallback name.
+pub(crate) fn key_name(argument: &Value) -> Value {
+    if argument["type"] == "string" {
+        argument.clone()
+    } else {
+        Value::Null
+    }
+}
+
 /// Identifies the actions of a MOTION command that names no motion resource.
 pub(crate) fn unbound_motion(profile: &str, index: usize) -> String {
     format!("{profile}#{index}")
@@ -99,7 +109,8 @@ pub(crate) fn key_actions(profiles: &[(String, Value)]) -> CoreResult<ProfileAct
                         return Err(fail(format!("KEY outside MOTION in {profile}")));
                     };
                     let (Some(game), Some(start), Some(end)) = (
-                        args.first().filter(|a| a["type"] == "string"),
+                        args.first()
+                            .filter(|a| a["type"] == "string" || a["type"] == "none"),
                         args.get(1).and_then(|a| a["value"].as_i64()),
                         args.get(2).and_then(|a| a["value"].as_i64()),
                     ) else {
@@ -110,7 +121,7 @@ pub(crate) fn key_actions(profiles: &[(String, Value)]) -> CoreResult<ProfileAct
                     }
                     // A KEY ending before it starts plays as a still pose at its start.
                     let action = KeyAction {
-                        game: game.clone(),
+                        game: key_name(game),
                         start: start as u64,
                         end: end.max(start) as u64,
                     };

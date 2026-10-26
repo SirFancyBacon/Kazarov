@@ -1,6 +1,8 @@
 pub mod core;
 #[cfg(not(test))]
 mod host_jobs;
+#[cfg(not(test))]
+mod host_models;
 #[cfg(feature = "desktop-ui")]
 mod setup;
 
