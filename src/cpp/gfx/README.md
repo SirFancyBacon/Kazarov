@@ -291,6 +291,11 @@ test, depth write, compare op, the whole stencil state, cull mode, front face, v
 and topology within a class are dynamic state, so they add none. The cache file is checked against the device before use and written through a temporary
 file and a rename.
 
+A CPU rasterizer (lavapipe, `VK_PHYSICAL_DEVICE_TYPE_CPU`) describes the same pipelines but compiles each one
+the first time a draw selects it (`PipelineAt`): lavapipe keeps every pipeline's machine code, which for the
+whole set is gigabytes per renderer, more than a CI runner has once a few test processes run at once.
+`KZ_PIPELINES_LAZY` set at start-up does the same on any device.
+
 ## Depth planes
 
 `DrawDepthPlanes2D` draws up to eight feathered planes of one quad (the heat haze's coverage image) in a

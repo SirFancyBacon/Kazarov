@@ -403,6 +403,8 @@ struct FrameCounters {
     uint64_t transient_bytes = 0;
 };
 
+struct PipelineRecipes;
+
 struct Context {
     SDL_Window                      *window = nullptr;
     RendererConfig                   config;
@@ -459,6 +461,8 @@ struct Context {
     VkPipelineCache              pipeline_cache = VK_NULL_HANDLE;
     std::vector<VkPipeline>      pipelines;
     uint32_t                    pipeline_count = 0;
+    // Set while pipelines compile on first use instead of at start-up: what each one is created from.
+    std::shared_ptr<PipelineRecipes> pipeline_recipes;
     // KZ_DEPTH_PLANES: the depth-bounds colour pass; null when off, unsupported or unbindless.
     VkPipeline                    depth_planes_pipeline = VK_NULL_HANDLE;
     bool                          depth_bounds = false; // the device's depthBounds feature is enabled
@@ -632,6 +636,8 @@ void     CreatePipelineLayout();
 bool     DepthPlanesEnabled();
 void     CreatePipelines();
 void     DestroyPipelines();
+// The pipeline at an index, compiling it first when pipelines compile on first use.
+VkPipeline PipelineAt(uint32_t index);
 uint32_t PipelineIndex(PipelineFamily family, uint32_t blend_slot, TextureMode mode, AlphaVariant alpha,
                        uint32_t fragment_features);
 // Without a dynamic colour write mask: the alpha-testing pipelines that write no colour, after the others.

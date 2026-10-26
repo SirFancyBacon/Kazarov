@@ -579,9 +579,99 @@ void LogShaderStats() {
     }
 }
 
+struct Specialization {
+    int32_t  mode;
+    VkBool32 alpha_test;
+    int32_t  features;
+    int32_t  alpha_function;
+    VkBool32 simple_color;
+    int32_t  alpha_reference;
+    VkBool32 plain_mesh_fog;
+    VkBool32 near_safe_mesh_fog;
+    VkBool32 near_safe_reciprocal;
+};
+
+// Everything a pipeline's create info points at. CreatePipelines fills it in place; it outlives the call while
+// pipelines compile on first use.
+struct PipelineRecipes {
+    std::mutex                                          mutex;
+    VkShaderModule                                      draw2d_module = VK_NULL_HANDLE;
+    VkShaderModule                                      mesh_module = VK_NULL_HANDLE;
+    VkShaderModule                                      frag_module = VK_NULL_HANDLE;
+    VkShaderModule                                      frag_single_module = VK_NULL_HANDLE;
+    VkShaderModule                                      prog0_module = VK_NULL_HANDLE;
+    VkVertexInputBindingDescription                     binding_2d = {};
+    VkVertexInputBindingDescription                     binding_mesh = {};
+    VkVertexInputBindingDescription                     binding_skinned = {};
+    std::array<VkVertexInputAttributeDescription, 4>    attributes_2d = {};
+    std::array<VkVertexInputAttributeDescription, 4>    attributes_mesh = {};
+    std::array<VkVertexInputAttributeDescription, 6>    attributes_prog0 = {};
+    std::array<VkVertexInputAttributeDescription, 6>    attributes_skinned = {};
+    VkPipelineVertexInputStateCreateInfo                vertex_2d = {};
+    VkPipelineVertexInputStateCreateInfo                vertex_mesh = {};
+    VkPipelineVertexInputStateCreateInfo                vertex_prog0 = {};
+    VkPipelineVertexInputStateCreateInfo                vertex_skinned = {};
+    VkPipelineInputAssemblyStateCreateInfo              triangles = {};
+    VkPipelineInputAssemblyStateCreateInfo              lines = {};
+    VkPipelineViewportStateCreateInfo                   viewport = {};
+    VkPipelineRasterizationStateCreateInfo              raster = {};
+    VkPipelineMultisampleStateCreateInfo                multisample = {};
+    VkPipelineDepthStencilStateCreateInfo               depth = {};
+    std::vector<VkDynamicState>                         dynamic_states;
+    std::vector<VkDynamicState>                         no_mask_states;
+    VkPipelineDynamicStateCreateInfo                    dynamic_no_mask = {};
+    VkPipelineDynamicStateCreateInfo                    dynamic = {};
+    VkFormat                                            color_format = kColorFormat;
+    VkPipelineRenderingCreateInfo                       rendering = {};
+    std::vector<VkPipelineColorBlendAttachmentState>    attachments;
+    std::vector<VkPipelineColorBlendStateCreateInfo>    blends;
+    std::array<VkSpecializationMapEntry, 9>             spec_entries = {};
+    Specialization       spec_data[kFamilyCount][kTextureModeCount][kAlphaVariantCount][kFragmentFeatureCount + 1] = {};
+    VkSpecializationInfo spec_info[kFamilyCount][kTextureModeCount][kAlphaVariantCount][kFragmentFeatureCount + 1] = {};
+    std::array<VkBool32, 2>                             skinned_data = {VK_FALSE, VK_TRUE};
+    VkSpecializationMapEntry                            skinned_entry = {0, 0, sizeof(VkBool32)};
+    std::array<VkSpecializationInfo, 2>                 skinned_info = {};
+    VkPipelineColorBlendAttachmentState                 no_color_attachment = {};
+    VkPipelineColorBlendStateCreateInfo                 no_color = {};
+    std::vector<VkPipelineShaderStageCreateInfo>        stages;
+    std::vector<VkGraphicsPipelineCreateInfo>           infos;
+};
+
+// A CPU rasterizer keeps every compiled pipeline's machine code, gigabytes for the whole set, and draws far
+// too slowly for a first-use compile to matter, so it compiles only the pipelines it draws with.
+bool PipelinesOnFirstUse() {
+    return g.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU || std::getenv("KZ_PIPELINES_LAZY") != nullptr;
+}
+
+void DestroyRecipeModules(PipelineRecipes &recipes) {
+    for (VkShaderModule module : {recipes.draw2d_module, recipes.mesh_module, recipes.frag_module,
+                                  recipes.frag_single_module, recipes.prog0_module}) {
+        if (module != VK_NULL_HANDLE) {
+            vkDestroyShaderModule(g.device, module, nullptr);
+        }
+    }
+}
+
+VkPipeline PipelineAt(uint32_t index) {
+    if (!g.pipeline_recipes) {
+        return g.pipelines[index];
+    }
+    PipelineRecipes &recipes = *g.pipeline_recipes;
+    std::lock_guard  lock(recipes.mutex);
+    VkPipeline      &pipeline = g.pipelines[index];
+    if (pipeline == VK_NULL_HANDLE && recipes.infos[index].sType == VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO) {
+        Check(vkCreateGraphicsPipelines(g.device, g.pipeline_cache, 1, &recipes.infos[index], nullptr, &pipeline),
+              "vkCreateGraphicsPipelines");
+    }
+    return pipeline;
+}
+
 void CreatePipelines() {
     auto start = std::chrono::steady_clock::now();
     BuildBlendTable();
+    const bool       lazy = PipelinesOnFirstUse();
+    auto             recipes = std::make_shared<PipelineRecipes>();
+    PipelineRecipes &r = *recipes;
 
     const bool                trace_init = std::getenv("KZ_PERF_INIT_TRACE") != nullptr;
     const bool                disable_cache = std::getenv("KZ_PIPELINE_CACHE_DISABLE") != nullptr;
@@ -594,95 +684,95 @@ void CreatePipelines() {
     Check(vkCreatePipelineCache(g.device, &cache, nullptr, &g.pipeline_cache), "vkCreatePipelineCache");
     const auto cache_created = trace_init ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
 
-    VkShaderModule draw2d_module = CreateShader(draw2d_vert, sizeof(draw2d_vert));
-    VkShaderModule mesh_module = CreateShader(mesh_vert, sizeof(mesh_vert));
-    VkShaderModule frag_module = g.bindless ? CreateShader(draw_frag, sizeof(draw_frag))
-                                            : CreateShader(draw_bound_frag, sizeof(draw_bound_frag));
-    VkShaderModule frag_single_module = g.bindless
-                                            ? CreateShader(draw_single_frag, sizeof(draw_single_frag))
-                                            : CreateShader(draw_bound_single_frag, sizeof(draw_bound_single_frag));
-    VkShaderModule prog0_module =
+    VkShaderModule &draw2d_module = r.draw2d_module = CreateShader(draw2d_vert, sizeof(draw2d_vert));
+    VkShaderModule &mesh_module = r.mesh_module = CreateShader(mesh_vert, sizeof(mesh_vert));
+    VkShaderModule &frag_module = r.frag_module = g.bindless ? CreateShader(draw_frag, sizeof(draw_frag))
+                                                             : CreateShader(draw_bound_frag, sizeof(draw_bound_frag));
+    VkShaderModule &frag_single_module = r.frag_single_module =
+        g.bindless ? CreateShader(draw_single_frag, sizeof(draw_single_frag))
+                   : CreateShader(draw_bound_single_frag, sizeof(draw_bound_single_frag));
+    VkShaderModule &prog0_module = r.prog0_module =
         g.config.prog0_meshes ? CreateShader(mesh_prog0_vert, sizeof(mesh_prog0_vert)) : VK_NULL_HANDLE;
 
-    VkVertexInputBindingDescription   binding_2d = {0, sizeof(Vertex2D), VK_VERTEX_INPUT_RATE_VERTEX};
-    VkVertexInputAttributeDescription attributes_2d[4] = {
+    VkVertexInputBindingDescription &binding_2d = r.binding_2d = {0, sizeof(Vertex2D), VK_VERTEX_INPUT_RATE_VERTEX};
+    auto &attributes_2d = r.attributes_2d = {{
         {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex2D, x)    },
         {1, 0, VK_FORMAT_R32G32_SFLOAT,    offsetof(Vertex2D, u)    },
         {2, 0, VK_FORMAT_R8G8B8A8_UNORM,   offsetof(Vertex2D, color)},
         {3, 0, VK_FORMAT_R8_UNORM,         offsetof(Vertex2D, fog)  },
-    };
-    VkVertexInputBindingDescription   binding_mesh = {0, sizeof(Vertex3D), VK_VERTEX_INPUT_RATE_VERTEX};
-    VkVertexInputAttributeDescription attributes_mesh[4] = {
+    }};
+    VkVertexInputBindingDescription &binding_mesh = r.binding_mesh = {0, sizeof(Vertex3D), VK_VERTEX_INPUT_RATE_VERTEX};
+    auto &attributes_mesh = r.attributes_mesh = {{
         {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex3D, position)},
         {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex3D, normal)  },
         {2, 0, VK_FORMAT_R32G32_SFLOAT,    offsetof(Vertex3D, uv)      },
         {3, 0, VK_FORMAT_R8G8B8A8_UNORM,   offsetof(Vertex3D, color)   },
-    };
-    VkPipelineVertexInputStateCreateInfo vertex_2d = {};
+    }};
+    VkPipelineVertexInputStateCreateInfo &vertex_2d = r.vertex_2d;
     vertex_2d.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     vertex_2d.vertexBindingDescriptionCount = 1;
     vertex_2d.pVertexBindingDescriptions = &binding_2d;
     vertex_2d.vertexAttributeDescriptionCount = 4;
-    vertex_2d.pVertexAttributeDescriptions = attributes_2d;
-    VkPipelineVertexInputStateCreateInfo vertex_mesh = vertex_2d;
+    vertex_2d.pVertexAttributeDescriptions = attributes_2d.data();
+    VkPipelineVertexInputStateCreateInfo &vertex_mesh = r.vertex_mesh = vertex_2d;
     vertex_mesh.pVertexBindingDescriptions = &binding_mesh;
-    vertex_mesh.pVertexAttributeDescriptions = attributes_mesh;
+    vertex_mesh.pVertexAttributeDescriptions = attributes_mesh.data();
 
     // mesh_prog0.vert always reads the skin at locations 4 and 5. Unskinned, they alias bytes of the
     // vertex itself, which the shader then never uses.
-    VkVertexInputAttributeDescription attributes_prog0[6] = {
+    auto &attributes_prog0 = r.attributes_prog0 = {{
         attributes_mesh[0],
         attributes_mesh[1],
         attributes_mesh[2],
         attributes_mesh[3],
         {4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex3D, position)},
         {5, 0, VK_FORMAT_R8G8B8A8_UINT,       offsetof(Vertex3D, color)   },
-    };
-    VkVertexInputBindingDescription   binding_skinned = {0, 2 * sizeof(Vertex3D),
-                                                         VK_VERTEX_INPUT_RATE_VERTEX};
-    VkVertexInputAttributeDescription attributes_skinned[6] = {
+    }};
+    VkVertexInputBindingDescription &binding_skinned = r.binding_skinned = {0, 2 * sizeof(Vertex3D),
+                                                                            VK_VERTEX_INPUT_RATE_VERTEX};
+    auto &attributes_skinned = r.attributes_skinned = {{
         attributes_mesh[0],
         attributes_mesh[1],
         attributes_mesh[2],
         attributes_mesh[3],
         {4, 0, VK_FORMAT_R32G32B32A32_SFLOAT, sizeof(Vertex3D) + offsetof(Prog0Skin, weight)},
         {5, 0, VK_FORMAT_R8G8B8A8_UINT,       sizeof(Vertex3D) + offsetof(Prog0Skin, bone)  },
-    };
-    VkPipelineVertexInputStateCreateInfo vertex_prog0 = vertex_mesh;
+    }};
+    VkPipelineVertexInputStateCreateInfo &vertex_prog0 = r.vertex_prog0 = vertex_mesh;
     vertex_prog0.vertexAttributeDescriptionCount = 6;
-    vertex_prog0.pVertexAttributeDescriptions = attributes_prog0;
-    VkPipelineVertexInputStateCreateInfo vertex_skinned = vertex_prog0;
+    vertex_prog0.pVertexAttributeDescriptions = attributes_prog0.data();
+    VkPipelineVertexInputStateCreateInfo &vertex_skinned = r.vertex_skinned = vertex_prog0;
     vertex_skinned.pVertexBindingDescriptions = &binding_skinned;
-    vertex_skinned.pVertexAttributeDescriptions = attributes_skinned;
+    vertex_skinned.pVertexAttributeDescriptions = attributes_skinned.data();
 
-    VkPipelineInputAssemblyStateCreateInfo triangles = {};
+    VkPipelineInputAssemblyStateCreateInfo &triangles = r.triangles;
     triangles.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
     triangles.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    VkPipelineInputAssemblyStateCreateInfo lines = triangles;
+    VkPipelineInputAssemblyStateCreateInfo &lines = r.lines = triangles;
     lines.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
 
-    VkPipelineViewportStateCreateInfo viewport = {};
+    VkPipelineViewportStateCreateInfo &viewport = r.viewport;
     viewport.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
     viewport.viewportCount = 1;
     viewport.scissorCount = 1;
 
-    VkPipelineRasterizationStateCreateInfo raster = {};
+    VkPipelineRasterizationStateCreateInfo &raster = r.raster;
     raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     raster.polygonMode = VK_POLYGON_MODE_FILL;
     raster.lineWidth = 1.0f;
 
-    VkPipelineMultisampleStateCreateInfo multisample = {};
+    VkPipelineMultisampleStateCreateInfo &multisample = r.multisample;
     multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
     multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
-    VkPipelineDepthStencilStateCreateInfo depth = {};
+    VkPipelineDepthStencilStateCreateInfo &depth = r.depth;
     depth.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
     depth.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
 
     // Depth and stencil state, cull mode and topology within a class are core dynamic state, and
     // so is the colour write mask where VK_EXT_extended_dynamic_state3 offers it: they multiply no
     // pipelines.
-    std::vector<VkDynamicState> dynamic_states = {
+    std::vector<VkDynamicState> &dynamic_states = r.dynamic_states = {
         VK_DYNAMIC_STATE_VIEWPORT,
         VK_DYNAMIC_STATE_SCISSOR,
         VK_DYNAMIC_STATE_CULL_MODE,
@@ -699,28 +789,30 @@ void CreatePipelines() {
         VK_DYNAMIC_STATE_BLEND_CONSTANTS,
     };
     // The pipelines that write no colour keep a fixed empty mask instead of the dynamic one.
-    const std::vector<VkDynamicState> no_mask_states = dynamic_states;
-    VkPipelineDynamicStateCreateInfo  dynamic_no_mask = {};
+    const std::vector<VkDynamicState> &no_mask_states = r.no_mask_states = dynamic_states;
+    VkPipelineDynamicStateCreateInfo  &dynamic_no_mask = r.dynamic_no_mask;
     dynamic_no_mask.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
     dynamic_no_mask.dynamicStateCount = static_cast<uint32_t>(no_mask_states.size());
     dynamic_no_mask.pDynamicStates = no_mask_states.data();
     if (g.dynamic_color_write_mask) {
         dynamic_states.push_back(VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT);
     }
-    VkPipelineDynamicStateCreateInfo dynamic = dynamic_no_mask;
+    VkPipelineDynamicStateCreateInfo &dynamic = r.dynamic = dynamic_no_mask;
     dynamic.dynamicStateCount = static_cast<uint32_t>(dynamic_states.size());
     dynamic.pDynamicStates = dynamic_states.data();
 
-    VkFormat                      color_format = kColorFormat;
-    VkPipelineRenderingCreateInfo rendering = {};
+    VkFormat                      &color_format = r.color_format;
+    VkPipelineRenderingCreateInfo &rendering = r.rendering;
     rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
     rendering.colorAttachmentCount = 1;
     rendering.pColorAttachmentFormats = &color_format;
     rendering.depthAttachmentFormat = g.depth_format;
     rendering.stencilAttachmentFormat = g.depth_format;
 
-    std::vector<VkPipelineColorBlendAttachmentState> attachments(g.blend_slot_count);
-    std::vector<VkPipelineColorBlendStateCreateInfo> blends(g.blend_slot_count);
+    std::vector<VkPipelineColorBlendAttachmentState> &attachments = r.attachments;
+    std::vector<VkPipelineColorBlendStateCreateInfo> &blends = r.blends;
+    attachments.assign(g.blend_slot_count, {});
+    blends.assign(g.blend_slot_count, {});
     for (uint32_t i = 0; i < g.blend_slot_count; i++) {
         const Equation                      &equation = g_equations[i];
         VkPipelineColorBlendAttachmentState &attachment = attachments[i];
@@ -740,19 +832,7 @@ void CreatePipelines() {
         blends[i].pAttachments = &attachments[i];
     }
 
-    struct Specialization {
-        int32_t  mode;
-        VkBool32 alpha_test;
-        int32_t  features;
-        int32_t  alpha_function;
-        VkBool32 simple_color;
-        int32_t  alpha_reference;
-        VkBool32 plain_mesh_fog;
-        VkBool32 near_safe_mesh_fog;
-        VkBool32 near_safe_reciprocal;
-    };
-
-    VkSpecializationMapEntry spec_entries[9] = {
+    auto &spec_entries = r.spec_entries = {{
         {0,  offsetof(Specialization, mode),                 sizeof(int32_t) },
         {1,  offsetof(Specialization, alpha_test),           sizeof(VkBool32)},
         {2,  offsetof(Specialization, features),             sizeof(int32_t) },
@@ -762,9 +842,9 @@ void CreatePipelines() {
         {6,  offsetof(Specialization, plain_mesh_fog),       sizeof(VkBool32)},
         {10, offsetof(Specialization, near_safe_mesh_fog),   sizeof(VkBool32)},
         {11, offsetof(Specialization, near_safe_reciprocal), sizeof(VkBool32)},
-    };
-    Specialization       spec_data[kFamilyCount][kTextureModeCount][kAlphaVariantCount][kFragmentFeatureCount + 1];
-    VkSpecializationInfo spec_info[kFamilyCount][kTextureModeCount][kAlphaVariantCount][kFragmentFeatureCount + 1];
+    }};
+    auto &spec_data = r.spec_data;
+    auto &spec_info = r.spec_info;
     for (uint32_t family = 0; family < kFamilyCount; family++) {
         for (uint32_t mode = 0; mode < kTextureModeCount; mode++) {
             for (uint32_t test = 0; test < kAlphaVariantCount; test++) {
@@ -783,24 +863,22 @@ void CreatePipelines() {
                         VK_FALSE,
                         VK_FALSE};
                     spec_info[family][mode][test][features] = {
-                        9, spec_entries, sizeof(Specialization), &spec_data[family][mode][test][features]};
+                        9, spec_entries.data(), sizeof(Specialization), &spec_data[family][mode][test][features]};
                 }
             }
         }
     }
 
-    VkBool32                 skinned_data[2] = {VK_FALSE, VK_TRUE};
-    VkSpecializationMapEntry skinned_entry = {0, 0, sizeof(VkBool32)};
-    VkSpecializationInfo     skinned_info[2] = {
-        {1, &skinned_entry, sizeof(VkBool32), &skinned_data[0]},
-        {1, &skinned_entry, sizeof(VkBool32), &skinned_data[1]},
-    };
+    auto &skinned_info = r.skinned_info = {{
+        {1, &r.skinned_entry, sizeof(VkBool32), &r.skinned_data[0]},
+        {1, &r.skinned_entry, sizeof(VkBool32), &r.skinned_data[1]},
+    }};
 
     // Writing no colour never blends. With nothing to discard, the fragment stage is dropped too and
     // one pipeline per family does for every such draw, with or without a dynamic mask. An alpha
     // test still needs the shader; without a dynamic mask that is a pipeline per family and mode.
-    VkPipelineColorBlendAttachmentState no_color_attachment = {};
-    VkPipelineColorBlendStateCreateInfo no_color = {};
+    VkPipelineColorBlendAttachmentState &no_color_attachment = r.no_color_attachment;
+    VkPipelineColorBlendStateCreateInfo &no_color = r.no_color;
     no_color.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
     no_color.attachmentCount = 1;
     no_color.pAttachments = &no_color_attachment;
@@ -808,8 +886,10 @@ void CreatePipelines() {
     uint32_t family_count = FamilyCount();
     uint32_t total = DepthOnlyPipelineIndex(static_cast<PipelineFamily>(family_count - 1)) + 1;
 
-    std::vector<VkPipelineShaderStageCreateInfo> stages(total * 2);
-    std::vector<VkGraphicsPipelineCreateInfo>    infos(total);
+    std::vector<VkPipelineShaderStageCreateInfo> &stages = r.stages;
+    std::vector<VkGraphicsPipelineCreateInfo>    &infos = r.infos;
+    stages.assign(total * 2, {});
+    infos.assign(total, {});
     uint32_t                                     creation_count = 0;
     auto                                         describe = [&](uint32_t index, uint32_t family, VkShaderModule fragment,
                                                                 const VkSpecializationInfo                *fragment_spec,
@@ -910,7 +990,7 @@ void CreatePipelines() {
         return result;
     };
     uint32_t workers = std::clamp(std::thread::hardware_concurrency(), 1u, 8u);
-    {
+    if (!lazy) {
         // std::thread rather than std::jthread, which Android's libc++ keeps experimental.
         std::vector<std::thread> threads;
         for (uint32_t i = 0; i < workers; i++) {
@@ -947,6 +1027,8 @@ void CreatePipelines() {
         for (std::thread &thread : threads) {
             thread.join();
         }
+    } else if (g.config.progress) {
+        g.config.progress(creation_count, creation_count);
     }
     Check(failure, "vkCreateGraphicsPipelines");
     const auto compiled = trace_init ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
@@ -1034,12 +1116,10 @@ void CreatePipelines() {
         LogShaderStats();
     }
 
-    vkDestroyShaderModule(g.device, draw2d_module, nullptr);
-    vkDestroyShaderModule(g.device, mesh_module, nullptr);
-    vkDestroyShaderModule(g.device, frag_module, nullptr);
-    vkDestroyShaderModule(g.device, frag_single_module, nullptr);
-    if (prog0_module != VK_NULL_HANDLE) {
-        vkDestroyShaderModule(g.device, prog0_module, nullptr);
+    if (lazy) {
+        g.pipeline_recipes = std::move(recipes);
+    } else {
+        DestroyRecipeModules(r);
     }
     if (!disable_cache && (initial.empty() || cache_unconfirmed.load(std::memory_order_relaxed) != 0)) {
         SaveCache(g.config.pipeline_cache, initial);
@@ -1054,7 +1134,8 @@ void CreatePipelines() {
                  milliseconds(start, loaded), milliseconds(loaded, cache_created),
                  milliseconds(cache_created, described), milliseconds(described, compiled), cache_unconfirmed.load(), initial.size());
     }
-    kz::Logf(kz::LogLevel::Info, "gfx", "{} pipelines ready in {:.2f} s", creation_count, g.pipeline_seconds);
+    kz::Logf(kz::LogLevel::Info, "gfx", "{} pipelines {} in {:.2f} s", creation_count,
+             lazy ? "compile on first use, described" : "ready", g.pipeline_seconds);
 }
 
 void DestroyPipelines() {
@@ -1063,6 +1144,10 @@ void DestroyPipelines() {
     }
     g.pipelines.clear();
     g.pipeline_count = 0;
+    if (g.pipeline_recipes) {
+        DestroyRecipeModules(*g.pipeline_recipes);
+        g.pipeline_recipes.reset();
+    }
     for (VkPipeline &pipeline : g.near_safe_fog_pipelines) {
         if (pipeline != VK_NULL_HANDLE) {
             vkDestroyPipeline(g.device, pipeline, nullptr);
