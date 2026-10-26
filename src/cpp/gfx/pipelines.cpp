@@ -3,23 +3,27 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <format>
 #include <fstream>
 #include <mutex>
 #include <string>
 #include <system_error>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "gfx/context.hpp"
 #include "kazarov/log.hpp"
 #include "platform/files.hpp"
 #include "platform/paths.hpp"
+#include "shaders/depth_planes.frag.spv.hpp"
 #include "shaders/draw.frag.spv.hpp"
+#include "shaders/draw2d.vert.spv.hpp"
 #include "shaders/draw_bound.frag.spv.hpp"
 #include "shaders/draw_bound_single.frag.spv.hpp"
 #include "shaders/draw_single.frag.spv.hpp"
-#include "shaders/draw2d.vert.spv.hpp"
 #include "shaders/mesh.vert.spv.hpp"
 #include "shaders/mesh_prog0.vert.spv.hpp"
 
@@ -210,16 +214,27 @@ std::vector<uint8_t> LoadCache(const std::filesystem::path &path) {
     if (!file) {
         return {};
     }
-    std::vector<uint8_t> data((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
     // Some drivers misbehave on a cache from another device or driver, so it is checked here first.
-    VkPipelineCacheHeaderVersionOne header;
-    if (data.size() < sizeof(header)) {
+    VkPipelineCacheHeaderVersionOne header = {};
+    if (!file.read(reinterpret_cast<char *>(&header), sizeof(header))) {
         return {};
     }
-    std::memcpy(&header, data.data(), sizeof(header));
     if (header.headerSize < sizeof(header) || header.headerVersion != VK_PIPELINE_CACHE_HEADER_VERSION_ONE ||
         header.vendorID != g.properties.vendorID || header.deviceID != g.properties.deviceID ||
         std::memcmp(header.pipelineCacheUUID, g.properties.pipelineCacheUUID, VK_UUID_SIZE) != 0) {
+        return {};
+    }
+    file.seekg(0, std::ios::end);
+    const auto size = file.tellg();
+    if (size < static_cast<std::streamoff>(header.headerSize)) {
+        return {};
+    }
+    if (std::getenv("KZ_PERF_INIT_TRACE") != nullptr) {
+        kz::Logf(kz::LogLevel::Info, "gfx", "perf init: compatible pipeline cache {} bytes", static_cast<uint64_t>(size));
+    }
+    std::vector<uint8_t> data(static_cast<size_t>(size));
+    file.seekg(0, std::ios::beg);
+    if (!file.read(reinterpret_cast<char *>(data.data()), size)) {
         return {};
     }
     return data;
@@ -358,13 +373,14 @@ void CreatePipelineLayout() {
     }
 
     // Set 1: the chunk's MeshConstants records at binding 0, Prog0Constants records at binding 1 and
-    // Prog0Palette records at binding 2.
+    // Prog0Palette records at binding 2. Binding 0 is also read by the fused 2D fragment shader.
     VkDescriptorSetLayoutBinding constants_bindings[3] = {};
     for (uint32_t binding = 0; binding < 3; binding++) {
         constants_bindings[binding].binding = binding;
         constants_bindings[binding].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         constants_bindings[binding].descriptorCount = 1;
-        constants_bindings[binding].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        constants_bindings[binding].stageFlags =
+            binding == 0 ? VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT : VK_SHADER_STAGE_VERTEX_BIT;
     }
     VkDescriptorSetLayoutCreateInfo constants_layout = {};
     constants_layout.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -397,19 +413,28 @@ void CreatePipelineLayout() {
     Check(vkCreatePipelineLayout(g.device, &info, nullptr, &g.pipeline_layout), "vkCreatePipelineLayout");
 }
 
-uint32_t PipelineIndex(PipelineFamily family, uint32_t blend_slot, TextureMode mode, bool alpha_test) {
-    return ((family * g.blend_slot_count + blend_slot) * kTextureModeCount + mode) * 2 + (alpha_test ? 1 : 0);
+// KZ_DEPTH_PLANES=1 builds the depth-bounds colour pass for DrawDepthPlanes2D. Read at each renderer start.
+bool DepthPlanesEnabled() {
+    const char *value = std::getenv("KZ_DEPTH_PLANES");
+    return value != nullptr && value[0] == '1';
+}
+
+uint32_t PipelineIndex(PipelineFamily family, uint32_t blend_slot, TextureMode mode, AlphaVariant alpha,
+                       uint32_t fragment_features) {
+    return (((family * g.blend_slot_count + blend_slot) * kTextureModeCount + mode) * kAlphaVariantCount + alpha) *
+               kFragmentFeatureCount +
+           fragment_features;
 }
 
 uint32_t NoColorPipelineIndex(PipelineFamily family, TextureMode mode) {
-    return FamilyCount() * g.blend_slot_count * kTextureModeCount * 2 +
+    return FamilyCount() * g.blend_slot_count * kTextureModeCount * kAlphaVariantCount * kFragmentFeatureCount +
            static_cast<uint32_t>(family) * kTextureModeCount + mode;
 }
 
 uint32_t DepthOnlyPipelineIndex(PipelineFamily family) {
     uint32_t families = FamilyCount();
     uint32_t no_color = g.dynamic_color_write_mask ? 0 : families * kTextureModeCount;
-    return families * g.blend_slot_count * kTextureModeCount * 2 + no_color + family;
+    return families * g.blend_slot_count * kTextureModeCount * kAlphaVariantCount * kFragmentFeatureCount + no_color + family;
 }
 
 PipelineFamily MeshFamily(const Prog0Constants *prog0) {
@@ -442,16 +467,121 @@ BlendMapping MapBlend(const GsBlend &blend, bool enable, bool target_has_alpha) 
     return g.blend_map[(target_has_alpha ? 0 : 81) + a * 27 + b * 9 + c * 3 + d];
 }
 
+// KZ_PERF_SHADER_STATS: the driver's statistics and internal representations of every pipeline whose
+// description contains the setting's text ("*" for all, statistics only).
+void LogShaderStats() {
+    auto properties = reinterpret_cast<PFN_vkGetPipelineExecutablePropertiesKHR>(
+        vkGetDeviceProcAddr(g.device, "vkGetPipelineExecutablePropertiesKHR"));
+    auto statistics = reinterpret_cast<PFN_vkGetPipelineExecutableStatisticsKHR>(
+        vkGetDeviceProcAddr(g.device, "vkGetPipelineExecutableStatisticsKHR"));
+    auto representations = reinterpret_cast<PFN_vkGetPipelineExecutableInternalRepresentationsKHR>(
+        vkGetDeviceProcAddr(g.device, "vkGetPipelineExecutableInternalRepresentationsKHR"));
+    if (properties == nullptr || statistics == nullptr || representations == nullptr) {
+        return;
+    }
+    const bool                                           all = g.perf.stats == "*";
+    const std::array<std::pair<uint32_t, VkPipeline>, 3> extras = {
+        {
+         {kNearSafeFogScope, g.near_safe_fog_pipelines[0]},
+         {kNearSafeFogAlphaScope, g.near_safe_fog_pipelines[1]},
+         {kDepthPlanesScope, g.depth_planes_pipeline},
+         }
+    };
+    for (uint32_t index = 0; index < g.pipelines.size() + extras.size(); index++) {
+        const bool       extra = index >= g.pipelines.size();
+        const auto       entry = extra ? extras[index - g.pipelines.size()] : std::pair{index, g.pipelines[index]};
+        const VkPipeline handle = entry.second;
+        if (handle == VK_NULL_HANDLE) {
+            continue;
+        }
+        const std::string name = DescribePipeline(entry.first);
+        if (!all && name.find(g.perf.stats) == std::string::npos) {
+            continue;
+        }
+        VkPipelineInfoKHR pipeline = {VK_STRUCTURE_TYPE_PIPELINE_INFO_KHR, nullptr, handle};
+        uint32_t          count = 0;
+        properties(g.device, &pipeline, &count, nullptr);
+        std::vector<VkPipelineExecutablePropertiesKHR> executables(count, {VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_PROPERTIES_KHR});
+        properties(g.device, &pipeline, &count, executables.data());
+        for (uint32_t e = 0; e < count; e++) {
+            VkPipelineExecutableInfoKHR executable = {VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INFO_KHR, nullptr,
+                                                      handle, e};
+            uint32_t                    stat_count = 0;
+            statistics(g.device, &executable, &stat_count, nullptr);
+            std::vector<VkPipelineExecutableStatisticKHR> stats(stat_count, {VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_STATISTIC_KHR});
+            statistics(g.device, &executable, &stat_count, stats.data());
+            std::string line = std::format("shader {} [{}] {}:", index, name, executables[e].name);
+            for (const VkPipelineExecutableStatisticKHR &stat : stats) {
+                switch (stat.format) {
+                    case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_BOOL32_KHR:
+                        line += std::format(" {}={}", stat.name, stat.value.b32);
+                        break;
+                    case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_INT64_KHR:
+                        line += std::format(" {}={}", stat.name, stat.value.i64);
+                        break;
+                    case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_UINT64_KHR:
+                        line += std::format(" {}={}", stat.name, stat.value.u64);
+                        break;
+                    default:
+                        line += std::format(" {}={}", stat.name, stat.value.f64);
+                        break;
+                }
+            }
+            kz::Logf(kz::LogLevel::Info, "gfx", "{}", line);
+            if (all) {
+                continue;
+            }
+            uint32_t ir_count = 0;
+            representations(g.device, &executable, &ir_count, nullptr);
+            std::vector<VkPipelineExecutableInternalRepresentationKHR> irs(
+                ir_count, {VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INTERNAL_REPRESENTATION_KHR});
+            representations(g.device, &executable, &ir_count, irs.data());
+            std::vector<std::vector<char>> texts(ir_count);
+            for (uint32_t r = 0; r < ir_count; r++) {
+                texts[r].resize(irs[r].dataSize + 1);
+                irs[r].pData = texts[r].data();
+            }
+            representations(g.device, &executable, &ir_count, irs.data());
+            for (uint32_t r = 0; r < ir_count; r++) {
+                if (!irs[r].isText) {
+                    continue;
+                }
+                texts[r].back() = '\0';
+                const std::string_view text(texts[r].data());
+                size_t                 begin = 0;
+                while (begin < text.size()) {
+                    size_t end = text.find('\n', begin);
+                    end = end == std::string_view::npos ? text.size() : end;
+                    kz::Logf(kz::LogLevel::Info, "gfx", "ir {} {} {}: {}", index, executables[e].name, irs[r].name,
+                             text.substr(begin, end - begin));
+                    begin = end + 1;
+                }
+            }
+        }
+    }
+}
+
 void CreatePipelines() {
     auto start = std::chrono::steady_clock::now();
     BuildBlendTable();
 
-    std::vector<uint8_t>      initial = LoadCache(g.config.pipeline_cache);
+    const bool trace_init = std::getenv("KZ_PERF_INIT_TRACE") != nullptr;
+    const bool disable_cache = std::getenv("KZ_PIPELINE_CACHE_DISABLE") != nullptr;
+    if (trace_init) {
+        kz::Logf(kz::LogLevel::Info, "gfx", "perf init: loading pipeline cache, bypass {}", disable_cache);
+    }
+    std::vector<uint8_t> initial = disable_cache ? std::vector<uint8_t>{} : LoadCache(g.config.pipeline_cache);
+    if (trace_init) {
+        kz::Logf(kz::LogLevel::Info, "gfx", "perf init: pipeline cache {} bytes", initial.size());
+    }
     VkPipelineCacheCreateInfo cache = {};
     cache.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
     cache.initialDataSize = initial.size();
     cache.pInitialData = initial.data();
     Check(vkCreatePipelineCache(g.device, &cache, nullptr, &g.pipeline_cache), "vkCreatePipelineCache");
+    if (trace_init) {
+        kz::Logf(kz::LogLevel::Info, "gfx", "perf init: pipeline cache created");
+    }
 
     VkShaderModule draw2d_module = CreateShader(draw2d_vert, sizeof(draw2d_vert));
     VkShaderModule mesh_module = CreateShader(mesh_vert, sizeof(mesh_vert));
@@ -602,18 +732,49 @@ void CreatePipelines() {
     struct Specialization {
         int32_t  mode;
         VkBool32 alpha_test;
+        int32_t  features;
+        int32_t  alpha_function;
+        VkBool32 simple_color;
+        int32_t  alpha_reference;
+        VkBool32 plain_mesh_fog;
+        VkBool32 near_safe_mesh_fog;
+        VkBool32 near_safe_reciprocal;
     };
 
-    VkSpecializationMapEntry spec_entries[2] = {
-        {0, offsetof(Specialization, mode),       sizeof(int32_t) },
-        {1, offsetof(Specialization, alpha_test), sizeof(VkBool32)},
+    VkSpecializationMapEntry spec_entries[9] = {
+        {0,  offsetof(Specialization, mode),                 sizeof(int32_t) },
+        {1,  offsetof(Specialization, alpha_test),           sizeof(VkBool32)},
+        {2,  offsetof(Specialization, features),             sizeof(int32_t) },
+        {3,  offsetof(Specialization, alpha_function),       sizeof(int32_t) },
+        {4,  offsetof(Specialization, simple_color),         sizeof(VkBool32)},
+        {5,  offsetof(Specialization, alpha_reference),      sizeof(int32_t) },
+        {6,  offsetof(Specialization, plain_mesh_fog),       sizeof(VkBool32)},
+        {10, offsetof(Specialization, near_safe_mesh_fog),   sizeof(VkBool32)},
+        {11, offsetof(Specialization, near_safe_reciprocal), sizeof(VkBool32)},
     };
-    Specialization       spec_data[kTextureModeCount][2];
-    VkSpecializationInfo spec_info[kTextureModeCount][2];
-    for (uint32_t mode = 0; mode < kTextureModeCount; mode++) {
-        for (uint32_t test = 0; test < 2; test++) {
-            spec_data[mode][test] = {static_cast<int32_t>(mode), test ? VK_TRUE : VK_FALSE};
-            spec_info[mode][test] = {2, spec_entries, sizeof(Specialization), &spec_data[mode][test]};
+    Specialization       spec_data[kFamilyCount][kTextureModeCount][kAlphaVariantCount][kFragmentFeatureCount + 1];
+    VkSpecializationInfo spec_info[kFamilyCount][kTextureModeCount][kAlphaVariantCount][kFragmentFeatureCount + 1];
+    for (uint32_t family = 0; family < kFamilyCount; family++) {
+        for (uint32_t mode = 0; mode < kTextureModeCount; mode++) {
+            for (uint32_t test = 0; test < kAlphaVariantCount; test++) {
+                for (uint32_t features = 0; features <= kFragmentFeatureCount; features++) {
+                    // Indices 4 and 5 are TEXA with AEM: flags 6 and 7, skipping the kPushAem-only values.
+                    uint32_t color_features = features % kColorFeatureCount;
+                    int32_t  flags = features == kFragmentFeatureCount ? -1
+                                     : color_features < 4              ? static_cast<int32_t>(color_features)
+                                                                       : static_cast<int32_t>(color_features + 2);
+                    spec_data[family][mode][test][features] = {
+                        static_cast<int32_t>(mode), test != kAlphaVariantNone ? VK_TRUE : VK_FALSE, flags,
+                        test == kAlphaVariantGEqual ? static_cast<int32_t>(AlphaFunc::GEqual) : -1,
+                        features >= kColorFeatureCount && features < kFragmentFeatureCount ? VK_TRUE : VK_FALSE,
+                        -1,
+                        family == kFamilyMesh ? VK_TRUE : VK_FALSE,
+                        VK_FALSE,
+                        VK_FALSE};
+                    spec_info[family][mode][test][features] = {
+                        9, spec_entries, sizeof(Specialization), &spec_data[family][mode][test][features]};
+                }
+            }
         }
     }
 
@@ -673,22 +834,29 @@ void CreatePipelines() {
         info.pColorBlendState = blend_state;
         info.pDynamicState = dynamic_state;
         info.layout = PipelineLayoutOf(static_cast<PipelineFamily>(family));
+        if (!g.perf.stats.empty() && (g.perf.stats == "*" || DescribePipeline(index).find(g.perf.stats) != std::string::npos)) {
+            info.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR |
+                          VK_PIPELINE_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR;
+        }
     };
     for (uint32_t family = 0; family < family_count; family++) {
         auto kind = static_cast<PipelineFamily>(family);
         for (uint32_t blend = 0; blend < g.blend_slot_count; blend++) {
             VkShaderModule fragment = UsesSecondSource(g_equations[blend]) ? frag_module : frag_single_module;
             for (uint32_t mode = 0; mode < kTextureModeCount; mode++) {
-                for (uint32_t test = 0; test < 2; test++) {
-                    describe(PipelineIndex(kind, blend, static_cast<TextureMode>(mode), test != 0), family,
-                             fragment, &spec_info[mode][test], &blends[blend], &dynamic);
+                for (uint32_t test = 0; test < kAlphaVariantCount; test++) {
+                    for (uint32_t features = 0; features < kFragmentFeatureCount; features++) {
+                        describe(PipelineIndex(kind, blend, static_cast<TextureMode>(mode),
+                                               static_cast<AlphaVariant>(test), features),
+                                 family, fragment, &spec_info[family][mode][test][features], &blends[blend], &dynamic);
+                    }
                 }
             }
         }
         if (!g.dynamic_color_write_mask) {
             for (uint32_t mode = 0; mode < kTextureModeCount; mode++) {
                 describe(NoColorPipelineIndex(kind, static_cast<TextureMode>(mode)), family, frag_single_module,
-                         &spec_info[mode][1], &no_color, &dynamic_no_mask);
+                         &spec_info[family][mode][kAlphaVariantGeneric][kFragmentFeatureCount], &no_color, &dynamic_no_mask);
             }
         }
         describe(DepthOnlyPipelineIndex(kind), family, VK_NULL_HANDLE, nullptr, &no_color, &dynamic_no_mask);
@@ -740,6 +908,90 @@ void CreatePipelines() {
         }
     }
     Check(failure, "vkCreateGraphicsPipelines");
+    if (NearSafeFogEnabled() && g.blend_slot_count > 4) {
+        for (uint32_t variant = 0; variant < 2; variant++) {
+            const AlphaVariant alpha = variant == 0 ? kAlphaVariantNone : kAlphaVariantGEqual;
+            const uint32_t     features = kColorFeatureCount + 1;
+            const uint32_t     base = PipelineIndex(kFamilyMesh, 4, kTextureRgba, alpha, features);
+            g.near_safe_fog_bases[variant] = base;
+            Specialization data = spec_data[kFamilyMesh][kTextureRgba][alpha][features];
+            data.near_safe_mesh_fog = VK_TRUE;
+            const char *reciprocal = std::getenv("KZ_FOG_NEAR_RECIPROCAL");
+            data.near_safe_reciprocal = reciprocal != nullptr && std::strcmp(reciprocal, "1") == 0 ? VK_TRUE : VK_FALSE;
+            VkSpecializationInfo fragment_info = spec_info[kFamilyMesh][kTextureRgba][alpha][features];
+            fragment_info.pData = &data;
+            VkPipelineShaderStageCreateInfo near_stages[] = {stages[base * 2], stages[base * 2 + 1]};
+            near_stages[1].pSpecializationInfo = &fragment_info;
+            VkGraphicsPipelineCreateInfo info = infos[base];
+            info.pStages = near_stages;
+            const auto create_near_pipeline = [&](uint32_t scope, VkPipeline &pipeline) {
+                VkGraphicsPipelineCreateInfo create = info;
+                const std::string            name = DescribePipeline(scope);
+                if (!g.perf.stats.empty() && (g.perf.stats == "*" || name.find(g.perf.stats) != std::string::npos)) {
+                    create.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
+                    if (g.perf.stats != "*") {
+                        create.flags |= VK_PIPELINE_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR;
+                    }
+                }
+                Check(vkCreateGraphicsPipelines(g.device, g.pipeline_cache, 1, &create, nullptr, &pipeline),
+                      "vkCreateGraphicsPipelines near-safe fog");
+            };
+            create_near_pipeline(variant == 0 ? kNearSafeFogScope : kNearSafeFogAlphaScope,
+                                 g.near_safe_fog_pipelines[variant]);
+        }
+    }
+    // The depth-planes colour pass: draw2d.vert and depth_planes.frag over the shared layout, no blend, and the
+    // depth bounds test on so a draw shades only the pixels whose stored depth selects its coverage. Depth
+    // test and writes stay dynamic like the indexed pipelines'; the bounds join the dynamic states.
+    if (DepthPlanesEnabled() && g.bindless && g.depth_bounds && g.depth_format == VK_FORMAT_D32_SFLOAT_S8_UINT) {
+        VkShaderModule                  planes_module = CreateShader(depth_planes_frag, sizeof(depth_planes_frag));
+        VkPipelineShaderStageCreateInfo planes_stages[2] = {};
+        planes_stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        planes_stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+        planes_stages[0].module = draw2d_module;
+        planes_stages[0].pName = "main";
+        planes_stages[1] = planes_stages[0];
+        planes_stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        planes_stages[1].module = planes_module;
+        VkPipelineDepthStencilStateCreateInfo planes_depth = depth;
+        planes_depth.depthBoundsTestEnable = VK_TRUE;
+        planes_depth.minDepthBounds = 0.0f;
+        planes_depth.maxDepthBounds = 1.0f;
+        std::vector<VkDynamicState> planes_states(dynamic.pDynamicStates, dynamic.pDynamicStates + dynamic.dynamicStateCount);
+        planes_states.push_back(VK_DYNAMIC_STATE_DEPTH_BOUNDS);
+        VkPipelineDynamicStateCreateInfo planes_dynamic = dynamic;
+        planes_dynamic.dynamicStateCount = static_cast<uint32_t>(planes_states.size());
+        planes_dynamic.pDynamicStates = planes_states.data();
+        VkGraphicsPipelineCreateInfo planes = {};
+        planes.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        if (!g.perf.stats.empty() && (g.perf.stats == "*" || std::string("depth-planes").find(g.perf.stats) != std::string::npos)) {
+            planes.flags = VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR |
+                           VK_PIPELINE_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR;
+        }
+        planes.pNext = &rendering;
+        planes.stageCount = 2;
+        planes.pStages = planes_stages;
+        planes.pVertexInputState = &vertex_2d;
+        planes.pInputAssemblyState = &triangles;
+        planes.pViewportState = &viewport;
+        planes.pRasterizationState = &raster;
+        planes.pMultisampleState = &multisample;
+        planes.pDepthStencilState = &planes_depth;
+        planes.pColorBlendState = &blends[0]; // pass-through, all channels written
+        planes.pDynamicState = &planes_dynamic;
+        planes.layout = g.pipeline_layout;
+        VkResult result =
+            vkCreateGraphicsPipelines(g.device, g.pipeline_cache, 1, &planes, nullptr, &g.depth_planes_pipeline);
+        if (result != VK_SUCCESS) {
+            g.depth_planes_pipeline = VK_NULL_HANDLE;
+            kz::Logf(kz::LogLevel::Info, "gfx", "KZ_DEPTH_PLANES: the depth planes pipeline failed ({}); planes draw one by one",
+                     static_cast<int>(result));
+        }
+        vkDestroyShaderModule(g.device, planes_module, nullptr);
+    }
+    if (!g.perf.stats.empty()) {
+        LogShaderStats();
+    }
 
     vkDestroyShaderModule(g.device, draw2d_module, nullptr);
     vkDestroyShaderModule(g.device, mesh_module, nullptr);
@@ -748,7 +1000,9 @@ void CreatePipelines() {
     if (prog0_module != VK_NULL_HANDLE) {
         vkDestroyShaderModule(g.device, prog0_module, nullptr);
     }
-    SaveCache(g.config.pipeline_cache);
+    if (!disable_cache) {
+        SaveCache(g.config.pipeline_cache);
+    }
     g.pipeline_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     kz::Logf(kz::LogLevel::Info, "gfx", "{} pipelines ready in {:.2f} s", total, g.pipeline_seconds);
 }
@@ -758,10 +1012,58 @@ void DestroyPipelines() {
         vkDestroyPipeline(g.device, pipeline, nullptr);
     }
     g.pipelines.clear();
+    for (VkPipeline &pipeline : g.near_safe_fog_pipelines) {
+        if (pipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(g.device, pipeline, nullptr);
+            pipeline = VK_NULL_HANDLE;
+        }
+    }
+    g.near_safe_fog_bases.fill(UINT32_MAX);
+    if (g.depth_planes_pipeline != VK_NULL_HANDLE) {
+        vkDestroyPipeline(g.device, g.depth_planes_pipeline, nullptr);
+        g.depth_planes_pipeline = VK_NULL_HANDLE;
+    }
     if (g.pipeline_cache != VK_NULL_HANDLE) {
         vkDestroyPipelineCache(g.device, g.pipeline_cache, nullptr);
         g.pipeline_cache = VK_NULL_HANDLE;
     }
+}
+
+std::string DescribePipeline(uint32_t index) {
+    static constexpr const char *kFamilies[] = {"2d", "lines", "mesh", "prog0", "skinned"};
+    static constexpr const char *kModes[] = {"flat", "rgba", "clut"};
+    if (index == kDepthPlanesScope) {
+        return "depth-planes";
+    }
+    if (index == kNearSafeFogScope || index == kNearSafeFogAlphaScope) {
+        return index == kNearSafeFogScope ? "mesh-fog-near-safe" : "mesh-fog-near-safe-atest>=";
+    }
+    const uint32_t families = FamilyCount();
+    const uint32_t colour =
+        families * g.blend_slot_count * kTextureModeCount * kAlphaVariantCount * kFragmentFeatureCount;
+    if (index < colour) {
+        const uint32_t features = index % kFragmentFeatureCount;
+        index /= kFragmentFeatureCount;
+        const uint32_t test = index % kAlphaVariantCount;
+        index /= kAlphaVariantCount;
+        const uint32_t  mode = index % kTextureModeCount;
+        const uint32_t  blend = index / kTextureModeCount % g.blend_slot_count;
+        const uint32_t  family = index / kTextureModeCount / g.blend_slot_count;
+        const Equation &equation = g_equations[blend];
+        // The equation's source and destination factors and op, and whether the dual-source shader feeds it.
+        return std::format("{} {} b{}({},{},{}{}){} features{}", kFamilies[family], kModes[mode], blend,
+                           static_cast<int>(equation.src), static_cast<int>(equation.dst),
+                           static_cast<int>(equation.op), UsesSecondSource(equation) ? ",dual" : "",
+                           test == kAlphaVariantGEqual ? " atest>=" : test == kAlphaVariantGeneric ? " atest"
+                                                                                                   : "",
+                           features);
+    }
+    const uint32_t no_color = g.dynamic_color_write_mask ? 0 : families * kTextureModeCount;
+    if (index < colour + no_color) {
+        const uint32_t rest = index - colour;
+        return std::format("{} {} nocolour", kFamilies[rest / kTextureModeCount], kModes[rest % kTextureModeCount]);
+    }
+    return std::format("{} depthonly", kFamilies[(index - colour - no_color) % families]);
 }
 
 } // namespace detail
