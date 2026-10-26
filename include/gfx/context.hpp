@@ -458,6 +458,7 @@ struct Context {
     VkPipelineLayout             pipeline_layout = VK_NULL_HANDLE;
     VkPipelineCache              pipeline_cache = VK_NULL_HANDLE;
     std::vector<VkPipeline>      pipelines;
+    uint32_t                    pipeline_count = 0;
     // KZ_DEPTH_PLANES: the depth-bounds colour pass; null when off, unsupported or unbindless.
     VkPipeline                    depth_planes_pipeline = VK_NULL_HANDLE;
     bool                          depth_bounds = false; // the device's depthBounds feature is enabled

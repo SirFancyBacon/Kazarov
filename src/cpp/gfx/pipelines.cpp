@@ -209,6 +209,14 @@ VkShaderModule CreateShader(const uint32_t *code, size_t bytes) {
     return module;
 }
 
+uint32_t CanonicalFragmentFeatures(TextureMode mode, uint32_t features) {
+    if (mode == kTextureNone && features < kFragmentFeatureCount) {
+        // Untextured fragments never sample TEXA/AEM; retain fog and the simple-colour half.
+        return features / kColorFeatureCount * kColorFeatureCount + features % 2;
+    }
+    return features;
+}
+
 std::vector<uint8_t> LoadCache(const std::filesystem::path &path) {
     std::ifstream file(path, std::ios::binary);
     if (!file) {
@@ -229,9 +237,6 @@ std::vector<uint8_t> LoadCache(const std::filesystem::path &path) {
     if (size < static_cast<std::streamoff>(header.headerSize)) {
         return {};
     }
-    if (std::getenv("KZ_PERF_INIT_TRACE") != nullptr) {
-        kz::Logf(kz::LogLevel::Info, "gfx", "perf init: compatible pipeline cache {} bytes", static_cast<uint64_t>(size));
-    }
     std::vector<uint8_t> data(static_cast<size_t>(size));
     file.seekg(0, std::ios::beg);
     if (!file.read(reinterpret_cast<char *>(data.data()), size)) {
@@ -240,8 +245,10 @@ std::vector<uint8_t> LoadCache(const std::filesystem::path &path) {
     return data;
 }
 
-void SaveCache(const std::filesystem::path &path) {
-    size_t size = 0;
+void SaveCache(const std::filesystem::path &path, const std::vector<uint8_t> &initial) {
+    const bool trace = std::getenv("KZ_PERF_INIT_TRACE") != nullptr;
+    const auto started = trace ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    size_t     size = 0;
     if (vkGetPipelineCacheData(g.device, g.pipeline_cache, &size, nullptr) != VK_SUCCESS || size == 0) {
         return;
     }
@@ -249,12 +256,23 @@ void SaveCache(const std::filesystem::path &path) {
     if (vkGetPipelineCacheData(g.device, g.pipeline_cache, &size, data.data()) != VK_SUCCESS) {
         return;
     }
-    std::error_code error;
-    if (path.has_parent_path()) {
-        std::filesystem::create_directories(path.parent_path(), error);
+    const bool unchanged = initial.size() == size && std::equal(initial.begin(), initial.end(), data.begin());
+    const auto serialized = trace ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    if (!unchanged) {
+        std::error_code error;
+        if (path.has_parent_path()) {
+            std::filesystem::create_directories(path.parent_path(), error);
+        }
+        if (FilesWrite(path, data.data(), size, true) != FilesResult::kWritten) {
+            Error("cannot write the pipeline cache to %s", PathsDisplay(path).c_str());
+        }
     }
-    if (FilesWrite(path, data.data(), size, true) != FilesResult::kWritten) {
-        Error("cannot write the pipeline cache to %s", PathsDisplay(path).c_str());
+    if (trace) {
+        const auto finished = std::chrono::steady_clock::now();
+        kz::Logf(kz::LogLevel::Info, "gfx",
+                 "perf init: pipeline cache bytes {} unchanged {} serialize_compare_ms {:.3f} write_ms {:.3f}",
+                 size, unchanged, std::chrono::duration<double, std::milli>(serialized - started).count(),
+                 std::chrono::duration<double, std::milli>(finished - serialized).count());
     }
 }
 
@@ -389,7 +407,6 @@ void CreatePipelineLayout() {
     Check(vkCreateDescriptorSetLayout(g.device, &constants_layout, nullptr, &g.constants_set_layout),
           "vkCreateDescriptorSetLayout");
 
-
     constexpr uint32_t         kConstantSets = 256;
     VkDescriptorPoolSize       constants_size = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3 * kConstantSets};
     VkDescriptorPoolCreateInfo constants_pool = {};
@@ -421,6 +438,7 @@ bool DepthPlanesEnabled() {
 
 uint32_t PipelineIndex(PipelineFamily family, uint32_t blend_slot, TextureMode mode, AlphaVariant alpha,
                        uint32_t fragment_features) {
+    fragment_features = CanonicalFragmentFeatures(mode, fragment_features);
     return (((family * g.blend_slot_count + blend_slot) * kTextureModeCount + mode) * kAlphaVariantCount + alpha) *
                kFragmentFeatureCount +
            fragment_features;
@@ -565,23 +583,16 @@ void CreatePipelines() {
     auto start = std::chrono::steady_clock::now();
     BuildBlendTable();
 
-    const bool trace_init = std::getenv("KZ_PERF_INIT_TRACE") != nullptr;
-    const bool disable_cache = std::getenv("KZ_PIPELINE_CACHE_DISABLE") != nullptr;
-    if (trace_init) {
-        kz::Logf(kz::LogLevel::Info, "gfx", "perf init: loading pipeline cache, bypass {}", disable_cache);
-    }
-    std::vector<uint8_t> initial = disable_cache ? std::vector<uint8_t>{} : LoadCache(g.config.pipeline_cache);
-    if (trace_init) {
-        kz::Logf(kz::LogLevel::Info, "gfx", "perf init: pipeline cache {} bytes", initial.size());
-    }
+    const bool                trace_init = std::getenv("KZ_PERF_INIT_TRACE") != nullptr;
+    const bool                disable_cache = std::getenv("KZ_PIPELINE_CACHE_DISABLE") != nullptr;
+    std::vector<uint8_t>      initial = disable_cache ? std::vector<uint8_t>{} : LoadCache(g.config.pipeline_cache);
+    const auto                loaded = trace_init ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     VkPipelineCacheCreateInfo cache = {};
     cache.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
     cache.initialDataSize = initial.size();
     cache.pInitialData = initial.data();
     Check(vkCreatePipelineCache(g.device, &cache, nullptr, &g.pipeline_cache), "vkCreatePipelineCache");
-    if (trace_init) {
-        kz::Logf(kz::LogLevel::Info, "gfx", "perf init: pipeline cache created");
-    }
+    const auto cache_created = trace_init ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
 
     VkShaderModule draw2d_module = CreateShader(draw2d_vert, sizeof(draw2d_vert));
     VkShaderModule mesh_module = CreateShader(mesh_vert, sizeof(mesh_vert));
@@ -799,15 +810,18 @@ void CreatePipelines() {
 
     std::vector<VkPipelineShaderStageCreateInfo> stages(total * 2);
     std::vector<VkGraphicsPipelineCreateInfo>    infos(total);
-    auto describe = [&](uint32_t index, uint32_t family, VkShaderModule fragment,
-                        const VkSpecializationInfo *fragment_spec,
-                        const VkPipelineColorBlendStateCreateInfo *blend_state,
-                        const VkPipelineDynamicStateCreateInfo *dynamic_state) {
+    uint32_t                                     creation_count = 0;
+    auto                                         describe = [&](uint32_t index, uint32_t family, VkShaderModule fragment,
+                                                                const VkSpecializationInfo                *fragment_spec,
+                                                                const VkPipelineColorBlendStateCreateInfo *blend_state,
+                                                                const VkPipelineDynamicStateCreateInfo    *dynamic_state) {
+        creation_count++;
         VkPipelineShaderStageCreateInfo *stage = &stages[index * 2];
         stage[0] = {};
         stage[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         stage[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-        stage[0].module = family == kFamilyMesh ? mesh_module : family > kFamilyMesh ? prog0_module : draw2d_module;
+        stage[0].module = family == kFamilyMesh ? mesh_module : family > kFamilyMesh ? prog0_module
+                                                                                     : draw2d_module;
         stage[0].pSpecializationInfo =
             family > kFamilyMesh ? &skinned_info[family == kFamilyMeshProg0Skinned] : nullptr;
         stage[0].pName = "main";
@@ -846,6 +860,9 @@ void CreatePipelines() {
             for (uint32_t mode = 0; mode < kTextureModeCount; mode++) {
                 for (uint32_t test = 0; test < kAlphaVariantCount; test++) {
                     for (uint32_t features = 0; features < kFragmentFeatureCount; features++) {
+                        if (CanonicalFragmentFeatures(static_cast<TextureMode>(mode), features) != features) {
+                            continue;
+                        }
                         describe(PipelineIndex(kind, blend, static_cast<TextureMode>(mode),
                                                static_cast<AlphaVariant>(test), features),
                                  family, fragment, &spec_info[family][mode][test][features], &blends[blend], &dynamic);
@@ -865,20 +882,44 @@ void CreatePipelines() {
     // Pipeline creation is thread-safe against one cache, and on a cold cache it is the whole
     // cost of starting up, so it is spread over the cores while the caller reports progress.
     g.pipelines.assign(total, VK_NULL_HANDLE);
+    g.pipeline_count = creation_count;
+    const auto              described = trace_init ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     std::atomic<uint32_t>   next{0};
     std::atomic<uint32_t>   done{0};
     std::atomic<VkResult>   failure{VK_SUCCESS};
     std::mutex              mutex;
     std::condition_variable progress;
-    uint32_t                workers = std::clamp(std::thread::hardware_concurrency(), 1u, 8u);
+    const bool              feedback_supported = g.properties.apiVersion >= VK_API_VERSION_1_3;
+    std::atomic<uint32_t>   cache_unconfirmed{0};
+    const auto              create_pipeline = [&](const VkGraphicsPipelineCreateInfo &description, VkPipeline &pipeline) {
+        VkGraphicsPipelineCreateInfo         create = description;
+        VkPipelineCreationFeedback           feedback{};
+        VkPipelineCreationFeedbackCreateInfo feedback_info{};
+        feedback_info.sType = VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO;
+        feedback_info.pNext = create.pNext;
+        feedback_info.pPipelineCreationFeedback = &feedback;
+        if (feedback_supported) {
+            create.pNext = &feedback_info;
+        }
+        const VkResult                            result = vkCreateGraphicsPipelines(g.device, g.pipeline_cache, 1, &create, nullptr, &pipeline);
+        constexpr VkPipelineCreationFeedbackFlags hit = VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT |
+                                                        VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT;
+        if (result != VK_SUCCESS || (feedback.flags & hit) != hit) {
+            cache_unconfirmed.fetch_add(1, std::memory_order_relaxed);
+        }
+        return result;
+    };
+    uint32_t workers = std::clamp(std::thread::hardware_concurrency(), 1u, 8u);
     {
         // std::thread rather than std::jthread, which Android's libc++ keeps experimental.
         std::vector<std::thread> threads;
         for (uint32_t i = 0; i < workers; i++) {
             threads.emplace_back([&]() {
                 for (uint32_t index = next++; index < total; index = next++) {
-                    VkResult result = vkCreateGraphicsPipelines(g.device, g.pipeline_cache, 1, &infos[index],
-                                                                nullptr, &g.pipelines[index]);
+                    if (infos[index].sType != VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO) {
+                        continue;
+                    }
+                    VkResult result = create_pipeline(infos[index], g.pipelines[index]);
                     if (result != VK_SUCCESS) {
                         failure = result;
                     }
@@ -897,9 +938,9 @@ void CreatePipelines() {
             reported = done;
             lock.unlock();
             if (g.config.progress) {
-                g.config.progress(reported, total);
+                g.config.progress(reported, creation_count);
             }
-            if (reported == total) {
+            if (reported == creation_count) {
                 break;
             }
         }
@@ -908,6 +949,7 @@ void CreatePipelines() {
         }
     }
     Check(failure, "vkCreateGraphicsPipelines");
+    const auto compiled = trace_init ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     if (NearSafeFogEnabled() && g.blend_slot_count > 4) {
         for (uint32_t variant = 0; variant < 2; variant++) {
             const AlphaVariant alpha = variant == 0 ? kAlphaVariantNone : kAlphaVariantGEqual;
@@ -933,7 +975,7 @@ void CreatePipelines() {
                         create.flags |= VK_PIPELINE_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR;
                     }
                 }
-                Check(vkCreateGraphicsPipelines(g.device, g.pipeline_cache, 1, &create, nullptr, &pipeline),
+                Check(create_pipeline(create, pipeline),
                       "vkCreateGraphicsPipelines near-safe fog");
             };
             create_near_pipeline(variant == 0 ? kNearSafeFogScope : kNearSafeFogAlphaScope,
@@ -980,8 +1022,7 @@ void CreatePipelines() {
         planes.pColorBlendState = &blends[0]; // pass-through, all channels written
         planes.pDynamicState = &planes_dynamic;
         planes.layout = g.pipeline_layout;
-        VkResult result =
-            vkCreateGraphicsPipelines(g.device, g.pipeline_cache, 1, &planes, nullptr, &g.depth_planes_pipeline);
+        VkResult result = create_pipeline(planes, g.depth_planes_pipeline);
         if (result != VK_SUCCESS) {
             g.depth_planes_pipeline = VK_NULL_HANDLE;
             kz::Logf(kz::LogLevel::Info, "gfx", "KZ_DEPTH_PLANES: the depth planes pipeline failed ({}); planes draw one by one",
@@ -1000,11 +1041,20 @@ void CreatePipelines() {
     if (prog0_module != VK_NULL_HANDLE) {
         vkDestroyShaderModule(g.device, prog0_module, nullptr);
     }
-    if (!disable_cache) {
-        SaveCache(g.config.pipeline_cache);
+    if (!disable_cache && (initial.empty() || cache_unconfirmed.load(std::memory_order_relaxed) != 0)) {
+        SaveCache(g.config.pipeline_cache, initial);
     }
     g.pipeline_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-    kz::Logf(kz::LogLevel::Info, "gfx", "{} pipelines ready in {:.2f} s", total, g.pipeline_seconds);
+    if (trace_init) {
+        const auto milliseconds = [](auto first, auto last) {
+            return std::chrono::duration<double, std::milli>(last - first).count();
+        };
+        kz::Logf(kz::LogLevel::Info, "gfx",
+                 "perf init: load_ms {:.3f} cache_create_ms {:.3f} describe_ms {:.3f} compile_ms {:.3f} cache_unconfirmed {} cache_input_bytes {}",
+                 milliseconds(start, loaded), milliseconds(loaded, cache_created),
+                 milliseconds(cache_created, described), milliseconds(described, compiled), cache_unconfirmed.load(), initial.size());
+    }
+    kz::Logf(kz::LogLevel::Info, "gfx", "{} pipelines ready in {:.2f} s", creation_count, g.pipeline_seconds);
 }
 
 void DestroyPipelines() {
@@ -1012,6 +1062,7 @@ void DestroyPipelines() {
         vkDestroyPipeline(g.device, pipeline, nullptr);
     }
     g.pipelines.clear();
+    g.pipeline_count = 0;
     for (VkPipeline &pipeline : g.near_safe_fog_pipelines) {
         if (pipeline != VK_NULL_HANDLE) {
             vkDestroyPipeline(g.device, pipeline, nullptr);
@@ -1068,7 +1119,7 @@ std::string DescribePipeline(uint32_t index) {
 
 } // namespace detail
 
-uint32_t PipelineCount() { return static_cast<uint32_t>(detail::g.pipelines.size()); }
+uint32_t PipelineCount() { return detail::g.pipeline_count; }
 
 double PipelineCompileSeconds() { return detail::g.pipeline_seconds; }
 

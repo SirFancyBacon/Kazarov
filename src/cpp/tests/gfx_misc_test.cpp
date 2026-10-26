@@ -2,6 +2,7 @@
 #include <unistd.h>
 
 #include <array>
+#include <chrono>
 #include <fstream>
 #include <iterator>
 #include <limits>
@@ -46,6 +47,22 @@ TEST(GfxMisc, PipelineCache) {
         ASSERT_TRUE(fixture.progress_done == fixture.progress_total);
         ASSERT_TRUE(fixture.progress_total == gfx::PipelineCount());
         ASSERT_TRUE(std::filesystem::exists(cache));
+    }
+    const auto read_cache = [&] {
+        std::ifstream file(cache, std::ios::binary);
+        return std::vector<char>(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+    };
+    const auto initial_bytes = read_cache();
+    std::filesystem::last_write_time(cache, std::filesystem::file_time_type::clock::now() - std::chrono::hours(24));
+    const auto old_time = std::filesystem::last_write_time(cache);
+    {
+        GfxFixture fixture(640, 480, 1.0f, options);
+        EXPECT_EQ(fixture.progress_total, gfx::PipelineCount());
+    }
+    if (read_cache() == initial_bytes) {
+        EXPECT_EQ(std::filesystem::last_write_time(cache), old_time);
+    } else {
+        EXPECT_NE(std::filesystem::last_write_time(cache), old_time);
     }
     // A cache from another device or a corrupt file is ignored, not fed to the driver, and replaced.
     const std::string garbage = "not a pipeline cache at all, but long enough to have a header";
@@ -105,6 +122,45 @@ TEST(GfxMisc, DrawsOutsideAFrameAreDropped) {
     gfx::Draw2D(gfx::Primitive::Quads, quad, {}, gfx::DrawState{});
     fixture.Frame({0, 0, 0, 0x80}, [] {});
     ASSERT_TRUE(fixture.PixelNear(320, 240, 0, 0, 0));
+}
+
+TEST(GfxMisc, UntexturedFogAndAlphaIgnoreTextureAlphaExpansion) {
+    GfxFixture fixture(64, 48);
+    auto       quad = Quad(0, 0, 640, 480, {64, 128, 192, 64});
+    for (auto &vertex : quad) {
+        vertex.fog = 128;
+    }
+    for (bool fog : {false, true}) {
+        for (auto function : {gfx::AlphaFunc::Always, gfx::AlphaFunc::Less,
+                              gfx::AlphaFunc::GEqual, gfx::AlphaFunc::Greater}) {
+            gfx::DrawState state;
+            state.fog = fog;
+            state.fog_color[0] = 200;
+            state.fog_color[1] = 10;
+            state.fog_color[2] = 20;
+            state.alpha_test = true;
+            state.alpha_func = function;
+            state.alpha_ref = 128;
+            const auto render = [&] {
+                fixture.Frame({3, 5, 7, 128}, [&] {
+                    gfx::Draw2D(gfx::Primitive::Quads, quad, {}, state);
+                });
+            };
+            render();
+            const auto expected = fixture.pixels;
+            if (function == gfx::AlphaFunc::Always) {
+                ASSERT_FALSE(fixture.PixelNear(32, 24, 3, 5, 7));
+            }
+            for (bool aem : {false, true}) {
+                for (uint8_t alpha : {uint8_t{0}, uint8_t{255}}) {
+                    state.texa_aem = aem;
+                    state.texa_ta0 = alpha;
+                    render();
+                    EXPECT_EQ(fixture.pixels, expected) << "fog=" << fog << " alpha test=" << static_cast<int>(function);
+                }
+            }
+        }
+    }
 }
 
 TEST(GfxMisc, Png) {

@@ -652,3 +652,23 @@ also CPU-only. Existing renderer/texture GPU families retain their existing excl
 A consumer that previously excluded only `^(GfxMisc|TexDecode)\.` must add
 `|(^|/)GfxGpu` to its CTest exclusion before adopting this dependency, or label
 this family and use `-LE gpu`. CPU display-list coverage continues to run.
+
+### Startup pipeline and cache work
+
+Untextured colour pipelines keep fog and simple-colour specialization but share
+TEXA/AEM variants: those flags only affect texture sampling. Original index slots
+remain available internally; unused slots contain null handles and own no pipeline.
+`PipelineCount()` and startup progress report the number actually created.
+
+On Vulkan 1.3 devices, pipeline creation requests
+[application-cache feedback](https://docs.vulkan.org/refpages/latest/refpages/source/VkPipelineCreationFeedbackFlagBits.html).
+Only valid, confirmed hits for every regular and optional startup pipeline allow
+retaining a compatible loaded cache without serializing and rewriting it. Missing
+feedback or any unconfirmed pipeline takes the persistence path; identical returned
+bytes also avoid rewriting. New, incompatible and corrupt caches are still rebuilt
+and written atomically. Serialized cache byte order need not be stable across runs.
+
+`KZ_PERF_INIT_TRACE=1` reports cache input size, load/create/description/compile
+spans and unconfirmed hits. The latter includes unavailable feedback and is not a
+count of shader compilations. A persistence attempt reports serialization/compare
+and write spans separately. Tracing is optional and its output adds observer cost.
