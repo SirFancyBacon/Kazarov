@@ -687,6 +687,25 @@ pub fn compatibility_path(published: &Path, name: &str) -> PathBuf {
     }
 }
 
+/// Whether `path`, in `directory` of a data tree rooted at `root`, is what a model conversion published
+/// there: a folder of a file's assets (`x.pak.assets`), a glTF, its buffer or its sidecar, or the source
+/// index and strip marker. Dark Cloud's disc has none of these.
+fn is_published_model_output(root: &Path, directory: &Path, path: &Path) -> bool {
+    let Some(name) = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_ascii_lowercase())
+    else {
+        return false;
+    };
+    if path.is_dir() {
+        return name.ends_with(".assets");
+    }
+    name.ends_with(".gltf")
+        || name.ends_with(".gltf.bin")
+        || name.ends_with(".game.json")
+        || (directory == root && (name == "models.json" || name == "models.stripped"))
+}
+
 impl SourceTree {
     pub fn open(source: &Path) -> CoreResult<Self> {
         Self::open_with_progress(source, &Phase::noop())
@@ -753,7 +772,8 @@ impl SourceTree {
         Self::directory_with_texture_exclusion(root, false)
     }
 
-    /// Opens an unpacked DC1 source tree while excluding generated texture replacements.
+    /// Opens an unpacked DC1 source tree while excluding what earlier conversions published into it:
+    /// generated texture replacements and model assets.
     pub fn directory_dc1(root: &Path) -> CoreResult<Self> {
         Self::directory_with_texture_exclusion(root, true)
     }
@@ -774,6 +794,11 @@ impl SourceTree {
                         .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("textures"))
                     && path.is_dir()
                 {
+                    continue;
+                }
+                // So is what a conversion published into it: converting it again would publish the
+                // earlier glTF and sidecars beside the new ones, and either could land last.
+                if exclude_textures && is_published_model_output(root, directory, &path) {
                     continue;
                 }
                 if path.is_dir() {
@@ -1191,6 +1216,30 @@ pub fn sound_text(source: &Path) -> CoreResult<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_dc1_tree_leaves_out_what_a_conversion_published_into_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        for file in [
+            "chara/c01d.chr",
+            "chara/c01d.gltf",
+            "chara/c01d.gltf.bin",
+            "chara/c01d.game.json",
+            "rmdat/rmdat2.pak",
+            "rmdat/rmdat2.pak.assets/rm05saget.gltf",
+            "textures/chara/c01d.png",
+            "models.json",
+            "models.stripped",
+        ] {
+            let path = root.join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"x").unwrap();
+        }
+        let tree = SourceTree::directory_dc1(root).unwrap();
+        let names: Vec<&str> = tree.names().collect();
+        assert_eq!(names, ["chara/c01d.chr", "rmdat/rmdat2.pak"]);
+    }
 
     #[test]
     fn dc1_directory_ignores_generated_texture_replacements() {
