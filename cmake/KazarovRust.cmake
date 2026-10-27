@@ -29,7 +29,10 @@ corrosion_set_env_vars(kazarov_core "KAZAROV_GAMEPLAY_ARCHIVE=${KZ_GAMEPLAY_ARCH
 include(GNUInstallDirs)
 # The seed's reader looks for it beside the executable and in an assets/ folder there. A game whose
 # own data may sit beside the executable as data.zip installs the seed in assets/.
-set(KZ_GAMEPLAY_INSTALL_DIR "${CMAKE_INSTALL_BINDIR}" CACHE STRING "Where the gameplay seed data.zip is installed")
+# A plain variable: a cache default would replace a game's own setting under CMake's pre-3.21 policies.
+if(NOT DEFINED KZ_GAMEPLAY_INSTALL_DIR)
+    set(KZ_GAMEPLAY_INSTALL_DIR "${CMAKE_INSTALL_BINDIR}")
+endif()
 install(FILES "${KZ_GAMEPLAY_ARCHIVE}" DESTINATION ${KZ_GAMEPLAY_INSTALL_DIR})
 include("${CMAKE_CURRENT_LIST_DIR}/KazarovFfmpeg.cmake")
 kz_ffmpeg(kazarov_core INTERFACE)
