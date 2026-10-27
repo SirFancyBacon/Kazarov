@@ -3000,9 +3000,15 @@ fn animation_clip(
 
 /// What a game rebuilding a motion from its clips can't read back from them: the keys outside every
 /// action and on an action's first and last frame (a clip has keys only inside its action, and merges
-/// runs of equal ones), and whole the channels a clip doesn't hold as retail keys (every channel but
-/// rotation, scale and translation, and the rotation and scale of a frame scaled unevenly, which may be
-/// rebaked). A channel kept whole says so (`"complete": true`).
+/// runs of equal ones), the keys inside an action a clip doesn't give back bit for bit (glTF's unit
+/// rotations change the last bit of a retail rotation that wasn't quite one; a clip key has no reserved
+/// words or fourth lane), kept with their words, and whole the channels a clip doesn't hold as retail
+/// keys (every channel but rotation, scale and translation, and the rotation and scale of a frame
+/// scaled unevenly, which may be rebaked). A channel kept whole says so (`"complete": true`).
+///
+/// Every channel is listed, in the motion's order and with its header words, even one keeping no keys:
+/// the game reads every vertex channel of a frame at the key of the motion's first channel, so a rebuild
+/// keeps the order.
 fn retail_residue(
     channels: &[Value],
     actions: &[(u64, u64)],
@@ -3010,11 +3016,14 @@ fn retail_residue(
 ) -> Vec<Value> {
     let mut residue = Vec::new();
     for channel in channels {
+        let mut kept = channel.clone();
         let (Some(frame), Some(kind)) = (channel["frame"].as_u64(), channel["type"].as_i64())
         else {
+            // A channel no frame of a model drives still keeps its place.
+            kept["complete"] = json!(true);
+            residue.push(kept);
             continue;
         };
-        let mut kept = channel.clone();
         if kind > 2 || (kind < 2 && rebaked.contains(&frame)) {
             kept["complete"] = json!(true);
         } else {
@@ -3042,23 +3051,64 @@ fn retail_residue(
                     inside.windows(2).all(|pair| pair[0] == pair[1])
                 })
                 .collect();
+            let channel_keys = channel["keys"].as_array().map_or(&[][..], Vec::as_slice);
             let keys: Vec<Value> = all
                 .iter()
-                .filter(|key| {
+                .filter_map(|key| {
                     let f = key["frame"].as_u64().unwrap_or(0);
                     let inside = |&(start, end): &(u64, u64)| start < f && f < end;
-                    !actions.iter().any(inside) || constant.iter().any(inside)
+                    if !actions.iter().any(inside) || constant.iter().any(inside) {
+                        return Some((*key).clone());
+                    }
+                    let disc = key_words(key);
+                    (clip_key_words(channel_keys, kind == 0, f) != disc).then(|| {
+                        let mut exact = (*key).clone();
+                        exact["value_u32"] = json!(&disc[3..]);
+                        exact
+                    })
                 })
-                .map(|key| (*key).clone())
                 .collect();
-            if keys.is_empty() {
-                continue;
-            }
             kept["keys"] = json!(keys);
         }
         residue.push(kept);
     }
     residue
+}
+
+/// A retail key's reserved and value words, as the disc has them.
+fn key_words(key: &Value) -> [u32; 7] {
+    let mut words = [0u32; 7];
+    for i in 0..3 {
+        words[i] = key["reserved_u32"][i].as_u64().unwrap_or(0) as u32;
+    }
+    for i in 0..4 {
+        words[3 + i] = match key["value_u32"][i].as_u64() {
+            Some(word) => word as u32,
+            None => (key["value"][i].as_f64().unwrap_or(0.) as f32).to_bits(),
+        };
+    }
+    words
+}
+
+/// The reserved and value words a rebuild writes for a key it reads from a clip at source frame
+/// `frame`: no reserved words; a rotation from glTF's normalized x, y, z, w to retail's scalar-first,
+/// conjugated form; a translation or scale with a zero fourth lane.
+fn clip_key_words(keys: &[Value], rotation: bool, frame: u64) -> [u32; 7] {
+    let value = super::actions::sample_transform(keys, rotation, frame as f32);
+    let lanes = if rotation {
+        [value[3], -value[0], -value[1], -value[2]]
+    } else {
+        [value[0], value[1], value[2], 0.]
+    };
+    [
+        0,
+        0,
+        0,
+        lanes[0].to_bits(),
+        lanes[1].to_bits(),
+        lanes[2].to_bits(),
+        lanes[3].to_bits(),
+    ]
 }
 
 /// The frames of a model whose rotation and scale clips are rebaked from the retail pose, which
@@ -8555,6 +8605,55 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn retail_residue_keeps_the_motions_order_and_what_a_clip_would_change() {
+        // A rotation a hair off unit length, as the disc's often are (from Saget's motion), and an exact
+        // one inside an action; a channel without keys; a translation a clip gives back exactly.
+        let rotation = json!({"frame":2,"target":0,"type":0,"reserved_u32":[32,7,9],"keys":[
+            {"frame":0,"reserved_u32":[0,0,0],"value":[1.0,0.0,0.0,0.0]},
+            {"frame":3,"reserved_u32":[0,0,0],"value":[0.0,0.0,1.0,0.0]},
+            {"frame":5,"reserved_u32":[0,0,0],"value":[0.947_944_343_090_057_4,-0.027_186_272_665_858_27,0.305_882_424_116_134_64,-0.084_251_567_721_366_88]},
+            {"frame":10,"reserved_u32":[0,0,0],"value":[0.0,1.0,0.0,0.0]}]});
+        let empty = json!({"frame":6,"target":0,"type":2,"reserved_u32":[32,7,9],"keys":[]});
+        let translation = json!({"frame":1,"target":0,"type":2,"reserved_u32":[32,7,9],"keys":[
+            {"frame":0,"reserved_u32":[0,0,0],"value":[0.0,0.0,0.0,0.0]},
+            {"frame":3,"reserved_u32":[0,0,0],"value":[0.5,1.0,1.5,0.0]},
+            {"frame":5,"reserved_u32":[0,0,0],"value":[1.0,2.0,3.0,0.0]},
+            {"frame":10,"reserved_u32":[0,0,0],"value":[2.0,4.0,6.0,0.0]}]});
+        let residue = retail_residue(
+            &[rotation, empty, translation],
+            &[(0, 10)],
+            &BTreeSet::new(),
+        );
+        // Every channel, in the motion's order, with its header words.
+        let frames: Vec<u64> = residue
+            .iter()
+            .map(|c| c["frame"].as_u64().unwrap())
+            .collect();
+        assert_eq!(frames, [2, 6, 1]);
+        assert_eq!(residue[0]["reserved_u32"], json!([32, 7, 9]));
+        assert_eq!(residue[1]["keys"], json!([]));
+        // The rotation inside the action comes back from glTF's unit rotation other than the disc has it.
+        let kept: Vec<u64> = residue[0]["keys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|k| k["frame"].as_u64().unwrap())
+            .collect();
+        assert_eq!(kept, [0, 5, 10]);
+        let exact = &residue[0]["keys"][1]["value_u32"];
+        assert_eq!(residue[0]["keys"][1]["frame"], json!(5));
+        assert_eq!(exact[0], json!(0.947_944_343_090_057_4_f32.to_bits()));
+        // The translation inside it comes back as it is; only its ends are kept.
+        let kept: Vec<u64> = residue[2]["keys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|k| k["frame"].as_u64().unwrap())
+            .collect();
+        assert_eq!(kept, [0, 10]);
+    }
+
     #[test]
     fn rebaked_scale_keys_keep_the_authored_rotation_in_every_clip() {
         let mut gltf = Gltf::new();
