@@ -73,7 +73,8 @@ jobs:
       - name: Build
         run: |
           version=$(python3 -c "import runpy; print(runpy.run_path('tools/ffmpeg/kz-ffmpeg')['VERSION'])")
-          curl -fL --retry 3 -o ffmpeg.tar.xz "https://ffmpeg.org/releases/ffmpeg-$version.tar.xz"
+          # ffmpeg.org drops some TLS handshakes, which plain --retry does not retry.
+          curl -fL --retry 5 --retry-all-errors --retry-delay 15 -o ffmpeg.tar.xz "https://ffmpeg.org/releases/ffmpeg-$version.tar.xz"
           target=${{ matrix.target }}
           python3 tools/ffmpeg/kz-ffmpeg ${target:+--target "$target"} --tarball ffmpeg.tar.xz --out "$PWD/out"
           tar -xJf ffmpeg.tar.xz -O "ffmpeg-$version/COPYING.LGPLv2.1" > out/COPYING.LGPLv2.1
