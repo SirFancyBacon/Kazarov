@@ -210,7 +210,7 @@ Per platform:
 
 - Linux: built into the image at `/opt/kazarov/ffmpeg`. The image sets `KZ_FFMPEG_DIR` to it.
 - macOS: run on the host, for example from a `kz_before_build` hook in `kazarov.conf`: `tools/kazarov/scripts/build/kz-ffmpeg --out .kazarov/ffmpeg/darwin-arm64`. It skips itself when the stamp is current.
-- Windows: there is no POSIX configure. `tools/windows/acquire.ps1` downloads BtbN's `win64-lgpl-shared` build of the 7.1 release from a dated `autobuild-*` tag, checked against a pinned SHA-256, and the project passes `-DKZ_FFMPEG_DIR`. `avcodec-61.dll`, `avutil-59.dll` and `swresample-5.dll` (which BtbN's `avcodec-61.dll` imports) ship beside the executable. Dynamic linking keeps LGPL relinking trivial; the static links on Linux and macOS are relinkable from the public sources.
+- Windows: `kz-ffmpeg --target windows-x64` cross-compiles the same configuration on Linux with llvm-mingw as DLLs, their `lib/lib*.dll.a` import libraries and `bin/ffmpeg.exe`. `.github/workflows/prebuilt.yml` publishes the result as `kz-ffmpeg-<version>-windows-x64.zip`, which consumers download, check against its SHA-256 and pass as `-DKZ_FFMPEG_DIR`. The DLLs ship beside the executable; dynamic linking keeps LGPL relinking trivial, and the static links on Linux and macOS are relinkable from the public sources.
 
 CMake, from the project's `CMakeLists.txt`:
 
